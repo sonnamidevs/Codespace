@@ -85,16 +85,27 @@ class _WeatherScreenState extends State<WeatherScreen> {
     }
 
     try {
+      // Increased timeout to 15 seconds to allow High Accuracy to lock on
       final position = await _determinePosition()
-          .timeout(const Duration(seconds: 5));
+          .timeout(const Duration(seconds: 15));
       await _fetchWeather(position.latitude, position.longitude);
     } catch (e) {
+      // If high accuracy fails or times out, try the last known location
+      try {
+        Position? lastPosition = await Geolocator.getLastKnownPosition();
+        if (lastPosition != null) {
+          await _fetchWeather(lastPosition.latitude, lastPosition.longitude);
+          return;
+        }
+      } catch (_) {}
+
+      // Final fallback to Accra if everything else fails
       if (mounted) {
         setState(() {
           _errorMessage = 'Using Accra, Ghana (location unavailable)';
         });
       }
-      await _fetchWeather(5.6037, -0.1870); // Fallback to Accra
+      await _fetchWeather(5.6037, -0.1870);
     }
   }
 
