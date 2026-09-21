@@ -126,7 +126,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
     }
 
     return await Geolocator.getCurrentPosition(
-      desiredAccuracy: LocationAccuracy.high,
+      desiredAccuracy: LocationAccuracy.medium,
     );
   }
 
