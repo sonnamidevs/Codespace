@@ -79,10 +79,11 @@ class _WeatherScreenState extends State<WeatherScreen> {
       Position position = await _determinePosition();
       await _fetchWeather(position.latitude, position.longitude);
     } catch (e) {
+      // Fallback to Accra, Ghana if location fails
       setState(() {
         _errorMessage = 'Location denied. Showing Accra, GH.';
       });
-      await _fetchWeather(5.6037, -0.1870); // Fallback to Accra
+      await _fetchWeather(5.6037, -0.1870); // Accra coordinates
     }
   }
 
@@ -315,14 +316,21 @@ class NotificationService {
     const AndroidInitializationSettings androidSettings =
         AndroidInitializationSettings('@mipmap/ic_launcher');
     const DarwinInitializationSettings iosSettings =
-        DarwinInitializationSettings(requestAlertPermission: true, requestBadgePermission: true, requestSoundPermission: true);
+        DarwinInitializationSettings(
+          requestAlertPermission: true, 
+          requestBadgePermission: true, 
+          requestSoundPermission: true
+        );
     
     const InitializationSettings settings = InitializationSettings(
       android: androidSettings,
       iOS: iosSettings,
     );
 
-    await _plugin.initialize(settings);
+    // FIXED: Named argument 'settings:'
+    await _plugin.initialize(
+      settings: settings,
+    );
 
     // Request Android 13+ Permission
     _plugin.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()?.requestNotificationsPermission();
@@ -344,6 +352,12 @@ class NotificationService {
       iOS: iosDetails,
     );
 
-    await _plugin.show(0, title, body, details);
+    // FIXED: Named arguments 'id:', 'title:', 'body:', 'notificationDetails:'
+    await _plugin.show(
+      id: 0,
+      title: title,
+      body: body,
+      notificationDetails: details,
+    );
   }
 }
