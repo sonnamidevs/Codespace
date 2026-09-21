@@ -8,10 +8,11 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 // Global Theme Notifier
 final ValueNotifier<ThemeMode> themeNotifier = ValueNotifier(ThemeMode.dark);
 
-void main() async {
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  await NotificationService().init();
   runApp(const WeatherHubApp());
+  // Initialize notifications AFTER runApp so it never blocks the UI.
+  NotificationService().init();
 }
 
 class WeatherHubApp extends StatelessWidget {
@@ -23,7 +24,7 @@ class WeatherHubApp extends StatelessWidget {
       valueListenable: themeNotifier,
       builder: (_, ThemeMode currentMode, __) {
         return MaterialApp(
-          title: 'Weather Hub by Sonnami Develops',
+          title: 'Weatherhub',
           debugShowCheckedModeBanner: false,
           themeMode: currentMode,
           theme: ThemeData(
@@ -59,10 +60,10 @@ class WeatherScreen extends StatefulWidget {
 }
 
 class _WeatherScreenState extends State<WeatherScreen> {
-  // Replace with your actual OpenWeatherMap API Key
+  // Replace with your OpenWeatherMap API key
   static const String apiKey = 'YOUR_OPENWEATHERMAP_API_KEY';
 
-  String _cityName = 'Locating...';
+  String _cityName = 'Loading...';
   double _temperature = 0.0;
   String _condition = '';
   bool _isLoading = true;
@@ -76,31 +77,37 @@ class _WeatherScreenState extends State<WeatherScreen> {
 
   Future<void> _loadWeather() async {
     try {
-      Position position = await _determinePosition();
+      // 5-second timeout on location — never hangs forever
+      final position = await _determinePosition()
+          .timeout(const Duration(seconds: 5));
       await _fetchWeather(position.latitude, position.longitude);
     } catch (e) {
-      // Fallback to Accra, Ghana if location fails
-      setState(() {
-        _errorMessage = 'Location denied. Showing Accra, GH.';
-      });
-      await _fetchWeather(5.6037, -0.1870); // Accra coordinates
+      // Fallback to Accra, Ghana if location fails or times out
+      if (mounted) {
+        setState(() {
+          _errorMessage = 'Using Accra, Ghana (location unavailable)';
+        });
+      }
+      await _fetchWeather(5.6037, -0.1870);
     }
   }
 
   Future<Position> _determinePosition() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) return Future.error('Location services are disabled.');
+    if (!serviceEnabled) {
+      throw Exception('Location services disabled');
+    }
 
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
       if (permission == LocationPermission.denied) {
-        return Future.error('Location permissions are denied');
+        throw Exception('Location permission denied');
       }
     }
 
     if (permission == LocationPermission.deniedForever) {
-      return Future.error('Location permissions are permanently denied.');
+      throw Exception('Location permission permanently denied');
     }
 
     return await Geolocator.getCurrentPosition(
@@ -114,47 +121,55 @@ class _WeatherScreenState extends State<WeatherScreen> {
     );
 
     try {
-      final response = await http.get(url);
+      // 10-second timeout on network
+      final response =
+          await http.get(url).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         final condition = data['weather'][0]['main'] ?? 'Clear';
 
-        setState(() {
-          _cityName = data['name'] ?? 'Unknown Location';
-          _temperature = (data['main']['temp'] as num).toDouble();
-          _condition = condition;
-          _isLoading = false;
-          _errorMessage = null;
-        });
+        if (mounted) {
+          setState(() {
+            _cityName = data['name'] ?? 'Unknown';
+            _temperature = (data['main']['temp'] as num).toDouble();
+            _condition = condition;
+            _isLoading = false;
+            _errorMessage = null;
+          });
+        }
 
-        // Trigger Notification if weather is bad
         _checkWeatherAndNotify(condition);
       } else {
+        if (mounted) {
+          setState(() {
+            _errorMessage = 'Weather API error (${response.statusCode})';
+            _isLoading = false;
+          });
+        }
+      }
+    } catch (e) {
+      if (mounted) {
         setState(() {
-          _errorMessage = 'Failed to load weather (${response.statusCode})';
+          _errorMessage = 'Network error. Check your connection.';
           _isLoading = false;
         });
       }
-    } catch (e) {
-      setState(() {
-        _errorMessage = 'Network error. Please check your connection.';
-        _isLoading = false;
-      });
     }
   }
 
   void _checkWeatherAndNotify(String condition) {
-    if (condition.toLowerCase() == 'rain' ||
-        condition.toLowerCase() == 'thunderstorm' ||
-        condition.toLowerCase() == 'drizzle') {
+    final c = condition.toLowerCase();
+    if (c == 'rain' || c == 'thunderstorm' || c == 'drizzle') {
       NotificationService().showNotification(
         'Weather Alert in $_cityName',
-        'It looks like $condition outside. Don\'t forget your umbrella!',
+        "It's $condition outside. Don't forget your umbrella!",
       );
     }
   }
 
+  // ⚠️ Make sure these filenames match what's in your assets/ folder EXACTLY.
+  // Spaces in filenames can cause issues — rename them to use dashes.
   String _getLottieAnimation(String condition, double temp) {
     switch (condition.toLowerCase()) {
       case 'clear':
@@ -163,12 +178,13 @@ class _WeatherScreenState extends State<WeatherScreen> {
         return 'assets/Weather-windy.json';
       case 'rain':
       case 'drizzle':
-        return 'assets/Weather-partly shower.json';
+        return 'assets/Weather-partly-shower.json';
       case 'thunderstorm':
         return 'assets/Weather-storm.json';
       default:
-        if (temp > 25) return 'assets/Weather-sunny.json';
-        return 'assets/Weather-windy.json';
+        return temp > 25
+            ? 'assets/Weather-sunny.json'
+            : 'assets/Weather-windy.json';
     }
   }
 
@@ -181,109 +197,120 @@ class _WeatherScreenState extends State<WeatherScreen> {
       body: SafeArea(
         child: Stack(
           children: [
-            // Main Content
+            // Main content
             _isLoading
                 ? const Center(child: CircularProgressIndicator())
-                : Column(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const SizedBox(height: 60), // Top spacer
-                      
-                      // Weather Content
-                      Column(
-                        mainAxisSize: MainAxisSize.min,
+                : SingleChildScrollView(
+                    child: SizedBox(
+                      height: MediaQuery.of(context).size.height - 40,
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          if (_errorMessage != null)
-                            Padding(
-                              padding: const EdgeInsets.only(bottom: 10),
-                              child: Text(
-                                _errorMessage!,
+                          const SizedBox(height: 60),
+
+                          Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (_errorMessage != null)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 10),
+                                  child: Text(
+                                    _errorMessage!,
+                                    style: TextStyle(
+                                      color: isDarkMode
+                                          ? Colors.orangeAccent
+                                          : Colors.orange[800],
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ),
+                              Icon(
+                                Icons.location_on,
+                                color: colorScheme.onSurfaceVariant,
+                                size: 20,
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                _cityName.toUpperCase(),
                                 style: TextStyle(
-                                  color: isDarkMode ? Colors.orangeAccent : Colors.orange[800],
-                                  fontSize: 12,
+                                  fontSize: 18,
+                                  letterSpacing: 2.0,
+                                  fontWeight: FontWeight.w300,
+                                  color: colorScheme.onSurfaceVariant,
                                 ),
                               ),
-                            ),
-                          Icon(Icons.location_on, color: colorScheme.onSurfaceVariant, size: 20),
-                          const SizedBox(height: 4),
-                          Text(
-                            _cityName.toUpperCase(),
-                            style: TextStyle(
-                              fontSize: 18,
-                              letterSpacing: 2.0,
-                              fontWeight: FontWeight.w300,
-                              color: colorScheme.onSurfaceVariant,
-                            ),
+                              const SizedBox(height: 20),
+                              Container(
+                                width: 220,
+                                height: 220,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: isDarkMode
+                                      ? const Color(0xFF1E1E1E)
+                                      : const Color(0xFFE0E0E0),
+                                ),
+                                child: Lottie.asset(
+                                  _getLottieAnimation(_condition, _temperature),
+                                  fit: BoxFit.contain,
+                                  repeat: true,
+                                  errorBuilder: (_, __, ___) => Icon(
+                                    Icons.cloud,
+                                    size: 100,
+                                    color: colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 20),
+                              Text(
+                                '${_temperature.toStringAsFixed(0)}°',
+                                style: TextStyle(
+                                  fontSize: 72,
+                                  fontWeight: FontWeight.w200,
+                                  color: colorScheme.onSurface,
+                                  height: 1.0,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                _condition,
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w400,
+                                  color: colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ],
                           ),
-                          const SizedBox(height: 20),
-                          
-                          // Lottie Animation with background circle for visibility in light mode
-                          Container(
-                            width: 220,
-                            height: 220,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: isDarkMode ? const Color(0xFF1E1E1E) : const Color(0xFFE0E0E0),
-                            ),
-                            child: Lottie.asset(
-                              _getLottieAnimation(_condition, _temperature),
-                              fit: BoxFit.contain,
-                              repeat: true,
-                              errorBuilder: (context, error, stackTrace) {
-                                return Icon(Icons.cloud, size: 100, color: colorScheme.onSurfaceVariant);
-                              },
-                            ),
-                          ),
-                          
-                          const SizedBox(height: 20),
-                          Text(
-                            '${_temperature.toStringAsFixed(0)}°',
-                            style: TextStyle(
-                              fontSize: 72,
-                              fontWeight: FontWeight.w200,
-                              color: colorScheme.onSurface,
-                              height: 1.0,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            _condition,
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.w400,
-                              color: colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                        ],
-                      ),
 
-                      // Footer / Credits
-                      Column(
-                        children: [
-                          Text(
-                            'Bismark NK at Sonnami Develops Ghana',
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w400,
-                              color: colorScheme.onSurfaceVariant,
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 20),
+                            child: Column(
+                              children: [
+                                Text(
+                                  'Bismark NK at Sonnami Develops Ghana',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    color: colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  '© 2026 Sonnami Develops',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: colorScheme.onSurfaceVariant
+                                        .withOpacity(0.7),
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
-                          const SizedBox(height: 4),
-                          Text(
-                            '© 2026 Sonnami Develops',
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w300,
-                              color: colorScheme.onSurfaceVariant.withOpacity(0.7),
-                            ),
-                          ),
-                          const SizedBox(height: 20),
                         ],
                       ),
-                    ],
+                    ),
                   ),
-            
-            // Theme Toggle Button (Top Right)
+
+            // Theme toggle
             Positioned(
               top: 10,
               right: 15,
@@ -293,7 +320,8 @@ class _WeatherScreenState extends State<WeatherScreen> {
                   color: colorScheme.onSurfaceVariant,
                 ),
                 onPressed: () {
-                  themeNotifier.value = isDarkMode ? ThemeMode.light : ThemeMode.dark;
+                  themeNotifier.value =
+                      isDarkMode ? ThemeMode.light : ThemeMode.dark;
                 },
               ),
             ),
@@ -304,60 +332,65 @@ class _WeatherScreenState extends State<WeatherScreen> {
   }
 }
 
-// Notification Service Helper Class
+// ---------- Notification Service ----------
 class NotificationService {
   static final NotificationService _instance = NotificationService._internal();
   factory NotificationService() => _instance;
   NotificationService._internal();
 
-  final FlutterLocalNotificationsPlugin _plugin = FlutterLocalNotificationsPlugin();
+  final FlutterLocalNotificationsPlugin _plugin =
+      FlutterLocalNotificationsPlugin();
 
   Future<void> init() async {
-    const AndroidInitializationSettings androidSettings =
-        AndroidInitializationSettings('@mipmap/ic_launcher');
-    const DarwinInitializationSettings iosSettings =
-        DarwinInitializationSettings(
-          requestAlertPermission: true, 
-          requestBadgePermission: true, 
-          requestSoundPermission: true
-        );
-    
-    const InitializationSettings settings = InitializationSettings(
-      android: androidSettings,
-      iOS: iosSettings,
-    );
+    try {
+      const AndroidInitializationSettings androidSettings =
+          AndroidInitializationSettings('@mipmap/ic_launcher');
+      const DarwinInitializationSettings iosSettings =
+          DarwinInitializationSettings(
+        requestAlertPermission: true,
+        requestBadgePermission: true,
+        requestSoundPermission: true,
+      );
+      const InitializationSettings settings = InitializationSettings(
+        android: androidSettings,
+        iOS: iosSettings,
+      );
 
-    // FIXED: Named argument 'settings:'
-    await _plugin.initialize(
-      settings: settings,
-    );
+      await _plugin.initialize(settings: settings);
 
-    // Request Android 13+ Permission
-    _plugin.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()?.requestNotificationsPermission();
+      _plugin
+          .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>()
+          ?.requestNotificationsPermission();
+    } catch (e) {
+      debugPrint('Notification init failed: $e');
+    }
   }
 
   Future<void> showNotification(String title, String body) async {
-    const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
-      'weather_channel',
-      'Weather Alerts',
-      channelDescription: 'Notifications for weather updates',
-      importance: Importance.max,
-      priority: Priority.high,
-    );
+    try {
+      const AndroidNotificationDetails androidDetails =
+          AndroidNotificationDetails(
+        'weather_channel',
+        'Weather Alerts',
+        channelDescription: 'Notifications for weather updates',
+        importance: Importance.max,
+        priority: Priority.high,
+      );
+      const DarwinNotificationDetails iosDetails = DarwinNotificationDetails();
+      const NotificationDetails details = NotificationDetails(
+        android: androidDetails,
+        iOS: iosDetails,
+      );
 
-    const DarwinNotificationDetails iosDetails = DarwinNotificationDetails();
-
-    const NotificationDetails details = NotificationDetails(
-      android: androidDetails,
-      iOS: iosDetails,
-    );
-
-    // FIXED: Named arguments 'id:', 'title:', 'body:', 'notificationDetails:'
-    await _plugin.show(
-      id: 0,
-      title: title,
-      body: body,
-      notificationDetails: details,
-    );
+      await _plugin.show(
+        id: 0,
+        title: title,
+        body: body,
+        notificationDetails: details,
+      );
+    } catch (e) {
+      debugPrint('Notification show failed: $e');
+    }
   }
 }
