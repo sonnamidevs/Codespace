@@ -60,8 +60,8 @@ class WeatherScreen extends StatefulWidget {
 }
 
 class _WeatherScreenState extends State<WeatherScreen> {
-  // Replace with your OpenWeatherMap API key
-  static const String apiKey = 'YOUR_OPENWEATHERMAP_API_KEY';
+  // 🔴 REPLACE THIS WITH YOUR ACTUAL OPENWEATHERMAP API KEY
+  static const String apiKey = 'dc09ecccd1c2202e86924f13c2458d90';
 
   String _cityName = 'Loading...';
   double _temperature = 0.0;
@@ -76,27 +76,31 @@ class _WeatherScreenState extends State<WeatherScreen> {
   }
 
   Future<void> _loadWeather() async {
+    if (apiKey == 'YOUR_OPENWEATHERMAP_API_KEY') {
+      setState(() {
+        _errorMessage = 'Please add your API Key in main.dart';
+        _isLoading = false;
+      });
+      return;
+    }
+
     try {
-      // 5-second timeout on location — never hangs forever
       final position = await _determinePosition()
           .timeout(const Duration(seconds: 5));
       await _fetchWeather(position.latitude, position.longitude);
     } catch (e) {
-      // Fallback to Accra, Ghana if location fails or times out
       if (mounted) {
         setState(() {
           _errorMessage = 'Using Accra, Ghana (location unavailable)';
         });
       }
-      await _fetchWeather(5.6037, -0.1870);
+      await _fetchWeather(5.6037, -0.1870); // Fallback to Accra
     }
   }
 
   Future<Position> _determinePosition() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
-      throw Exception('Location services disabled');
-    }
+    if (!serviceEnabled) throw Exception('Location services disabled');
 
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
@@ -111,7 +115,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
     }
 
     return await Geolocator.getCurrentPosition(
-      desiredAccuracy: LocationAccuracy.low,
+      desiredAccuracy: LocationAccuracy.high,
     );
   }
 
@@ -121,9 +125,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
     );
 
     try {
-      // 10-second timeout on network
-      final response =
-          await http.get(url).timeout(const Duration(seconds: 10));
+      final response = await http.get(url).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
@@ -138,12 +140,11 @@ class _WeatherScreenState extends State<WeatherScreen> {
             _errorMessage = null;
           });
         }
-
         _checkWeatherAndNotify(condition);
       } else {
         if (mounted) {
           setState(() {
-            _errorMessage = 'Weather API error (${response.statusCode})';
+            _errorMessage = 'API Error: ${response.statusCode}. Check your API key.';
             _isLoading = false;
           });
         }
@@ -168,8 +169,6 @@ class _WeatherScreenState extends State<WeatherScreen> {
     }
   }
 
-  // ⚠️ Make sure these filenames match what's in your assets/ folder EXACTLY.
-  // Spaces in filenames can cause issues — rename them to use dashes.
   String _getLottieAnimation(String condition, double temp) {
     switch (condition.toLowerCase()) {
       case 'clear':
@@ -194,135 +193,172 @@ class _WeatherScreenState extends State<WeatherScreen> {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
+      // AppBar holds the theme toggle and info button cleanly
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        actions: [
+          IconButton(
+            icon: Icon(isDarkMode ? Icons.light_mode : Icons.dark_mode),
+            color: colorScheme.onSurfaceVariant,
+            onPressed: () {
+              themeNotifier.value =
+                  isDarkMode ? ThemeMode.light : ThemeMode.dark;
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.info_outline),
+            color: colorScheme.onSurfaceVariant,
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const InfoPage()),
+              );
+            },
+          ),
+        ],
+      ),
       body: SafeArea(
-        child: Stack(
-          children: [
-            // Main content
-            _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : SingleChildScrollView(
-                    child: SizedBox(
-                      height: MediaQuery.of(context).size.height - 40,
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const SizedBox(height: 60),
-
-                          Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              if (_errorMessage != null)
-                                Padding(
-                                  padding: const EdgeInsets.only(bottom: 10),
-                                  child: Text(
-                                    _errorMessage!,
-                                    style: TextStyle(
-                                      color: isDarkMode
-                                          ? Colors.orangeAccent
-                                          : Colors.orange[800],
-                                      fontSize: 12,
-                                    ),
-                                  ),
-                                ),
-                              Icon(
-                                Icons.location_on,
-                                color: colorScheme.onSurfaceVariant,
-                                size: 20,
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                _cityName.toUpperCase(),
-                                style: TextStyle(
-                                  fontSize: 18,
-                                  letterSpacing: 2.0,
-                                  fontWeight: FontWeight.w300,
-                                  color: colorScheme.onSurfaceVariant,
-                                ),
-                              ),
-                              const SizedBox(height: 20),
-                              Container(
-                                width: 220,
-                                height: 220,
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: isDarkMode
-                                      ? const Color(0xFF1E1E1E)
-                                      : const Color(0xFFE0E0E0),
-                                ),
-                                child: Lottie.asset(
-                                  _getLottieAnimation(_condition, _temperature),
-                                  fit: BoxFit.contain,
-                                  repeat: true,
-                                  errorBuilder: (_, __, ___) => Icon(
-                                    Icons.cloud,
-                                    size: 100,
-                                    color: colorScheme.onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(height: 20),
-                              Text(
-                                '${_temperature.toStringAsFixed(0)}°',
-                                style: TextStyle(
-                                  fontSize: 72,
-                                  fontWeight: FontWeight.w200,
-                                  color: colorScheme.onSurface,
-                                  height: 1.0,
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              Text(
-                                _condition,
-                                style: TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w400,
-                                  color: colorScheme.onSurfaceVariant,
-                                ),
-                              ),
-                            ],
-                          ),
-
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 20),
-                            child: Column(
-                              children: [
-                                Text(
-                                  'Bismark NK at Sonnami Develops Ghana',
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    color: colorScheme.onSurfaceVariant,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  '© 2026 Sonnami Develops',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: colorScheme.onSurfaceVariant
-                                        .withOpacity(0.7),
-                                  ),
-                                ),
-                              ],
+        child: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : Center(
+                // Center ensures everything is perfectly in the middle
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      if (_errorMessage != null)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 20),
+                          child: Text(
+                            _errorMessage!,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: isDarkMode
+                                  ? Colors.orangeAccent
+                                  : Colors.orange[800],
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
                             ),
                           ),
-                        ],
+                        ),
+                      Icon(
+                        Icons.location_on,
+                        color: colorScheme.onSurfaceVariant,
+                        size: 24,
                       ),
-                    ),
+                      const SizedBox(height: 8),
+                      Text(
+                        _cityName.toUpperCase(),
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 20,
+                          letterSpacing: 2.0,
+                          fontWeight: FontWeight.w300,
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                      const SizedBox(height: 30),
+                      
+                      // Responsive Lottie Container
+                      LayoutBuilder(
+                        builder: (context, constraints) {
+                          double size = constraints.maxWidth * 0.7;
+                          if (size > 300) size = 300; // Max size
+                          return Container(
+                            width: size,
+                            height: size,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: isDarkMode
+                                  ? const Color(0xFF1E1E1E)
+                                  : const Color(0xFFE0E0E0),
+                            ),
+                            child: Lottie.asset(
+                              _getLottieAnimation(_condition, _temperature),
+                              fit: BoxFit.contain,
+                              repeat: true,
+                              errorBuilder: (_, __, ___) => Icon(
+                                Icons.cloud,
+                                size: size * 0.5,
+                                color: colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                      
+                      const SizedBox(height: 30),
+                      Text(
+                        '${_temperature.toStringAsFixed(0)}°',
+                        style: TextStyle(
+                          fontSize: 80,
+                          fontWeight: FontWeight.w200,
+                          color: colorScheme.onSurface,
+                          height: 1.0,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        _condition,
+                        style: TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.w400,
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
                   ),
-
-            // Theme toggle
-            Positioned(
-              top: 10,
-              right: 15,
-              child: IconButton(
-                icon: Icon(
-                  isDarkMode ? Icons.light_mode : Icons.dark_mode,
-                  color: colorScheme.onSurfaceVariant,
                 ),
-                onPressed: () {
-                  themeNotifier.value =
-                      isDarkMode ? ThemeMode.light : ThemeMode.dark;
-                },
+              ),
+      ),
+    );
+  }
+}
+
+// ---------- Separate Clean Info Page ----------
+class InfoPage extends StatelessWidget {
+  const InfoPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    
+    return Scaffold(
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        iconTheme: IconThemeData(color: colorScheme.onSurface),
+      ),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.cloud, size: 80, color: colorScheme.onSurfaceVariant),
+            const SizedBox(height: 20),
+            Text(
+              'Bismark NK',
+              style: TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: colorScheme.onSurface,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'at Sonnami Develops Ghana',
+              style: TextStyle(
+                fontSize: 16,
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 40),
+            Text(
+              '© 2026 Sonnami Develops',
+              style: TextStyle(
+                fontSize: 14,
+                color: colorScheme.onSurfaceVariant.withOpacity(0.7),
               ),
             ),
           ],
