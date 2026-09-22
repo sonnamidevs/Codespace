@@ -711,7 +711,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
                             Align(
                               alignment: Alignment.centerLeft,
                               child: Text(
-                                '${_getGreeting()}, Bismark',
+                                '${_getGreeting()}, ...',
                                 style: TextStyle(
                                   fontSize: 14,
                                   letterSpacing: 0.5,
