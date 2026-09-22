@@ -16,7 +16,6 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   tzdata.initializeTimeZones();
   try {
-    // FIXED: New flutter_timezone v4 API returns TimezoneInfo object
     final tzInfo = await FlutterTimezone.getLocalTimezone();
     tz.setLocalLocation(tz.getLocation(tzInfo.identifier));
   } catch (e) {
@@ -100,7 +99,7 @@ class WeatherScreen extends StatefulWidget {
 
 class _WeatherScreenState extends State<WeatherScreen> {
   // 🔴 REPLACE WITH YOUR OPENWEATHERMAP API KEY
-  static const String apiKey = 'YOUR_OPENWEATHERMAP_API_KEY';
+  static const String apiKey = 'dc09ecccd1c2202e86924f13c2458d90';
 
   String _cityName = 'Loading...';
   double _temperature = 0.0;
@@ -1360,12 +1359,13 @@ class NotificationService {
         iOS: iosDetails,
       );
 
+      // ✅ FIXED: Named parameters for flutter_local_notifications v20+
       await _plugin.zonedSchedule(
-        id,
-        title,
-        body,
-        scheduled,
-        details,
+        id: id,
+        title: title,
+        body: body,
+        scheduledDate: scheduled,
+        notificationDetails: details,
         androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
       );
     } catch (e) {
