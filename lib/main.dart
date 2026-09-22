@@ -65,8 +65,12 @@ class _WeatherScreenState extends State<WeatherScreen> {
 
   String _cityName = 'Loading...';
   double _temperature = 0.0;
+  double _feelsLike = 0.0;
+  double _humidity = 0.0;
+  double _windSpeed = 0.0;
   String _condition = '';
   bool _isLoading = true;
+  bool _isCelsius = true;
   String? _errorMessage;
 
   @override
@@ -75,7 +79,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
     _loadWeather();
   }
 
-  Future<void> _loadWeather() async {
+  Future<void> _loadWeather({String? cityQuery}) async {
     if (apiKey == 'YOUR_OPENWEATHERMAP_API_KEY') {
       setState(() {
         _errorMessage = 'Please add your API Key in main.dart';
@@ -84,28 +88,38 @@ class _WeatherScreenState extends State<WeatherScreen> {
       return;
     }
 
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
     try {
-      // Increased timeout to 15 seconds to allow High Accuracy to lock on
-      final position = await _determinePosition()
-          .timeout(const Duration(seconds: 15));
-      await _fetchWeather(position.latitude, position.longitude);
+      if (cityQuery != null && cityQuery.isNotEmpty) {
+        // Fetch by City Name
+        await _fetchWeatherByCity(cityQuery);
+      } else {
+        // Fetch by GPS
+        final position = await _determinePosition()
+            .timeout(const Duration(seconds: 15));
+        await _fetchWeatherByCoords(position.latitude, position.longitude);
+      }
     } catch (e) {
       // If high accuracy fails or times out, try the last known location
       try {
         Position? lastPosition = await Geolocator.getLastKnownPosition();
         if (lastPosition != null) {
-          await _fetchWeather(lastPosition.latitude, lastPosition.longitude);
+          await _fetchWeatherByCoords(lastPosition.latitude, lastPosition.longitude);
           return;
         }
       } catch (_) {}
 
-      // Final fallback to Accra if everything else fails
+      // Final fallback to Accra
       if (mounted) {
         setState(() {
           _errorMessage = 'Using Accra, Ghana (location unavailable)';
         });
       }
-      await _fetchWeather(5.6037, -0.1870);
+      await _fetchWeatherByCoords(5.6037, -0.1870);
     }
   }
 
@@ -126,15 +140,27 @@ class _WeatherScreenState extends State<WeatherScreen> {
     }
 
     return await Geolocator.getCurrentPosition(
-      desiredAccuracy: LocationAccuracy.medium,
+      desiredAccuracy: LocationAccuracy.high,
     );
   }
 
-  Future<void> _fetchWeather(double lat, double lon) async {
+  Future<void> _fetchWeatherByCoords(double lat, double lon) async {
+    final unit = _isCelsius ? 'metric' : 'imperial';
     final url = Uri.parse(
-      'https://api.openweathermap.org/data/2.5/weather?lat=$lat&lon=$lon&appid=$apiKey&units=metric',
+      'https://api.openweathermap.org/data/2.5/weather?lat=$lat&lon=$lon&appid=$apiKey&units=$unit',
     );
+    await _processWeatherResponse(url);
+  }
 
+  Future<void> _fetchWeatherByCity(String city) async {
+    final unit = _isCelsius ? 'metric' : 'imperial';
+    final url = Uri.parse(
+      'https://api.openweathermap.org/data/2.5/weather?q=$city&appid=$apiKey&units=$unit',
+    );
+    await _processWeatherResponse(url);
+  }
+
+  Future<void> _processWeatherResponse(Uri url) async {
     try {
       final response = await http.get(url).timeout(const Duration(seconds: 10));
 
@@ -146,6 +172,9 @@ class _WeatherScreenState extends State<WeatherScreen> {
           setState(() {
             _cityName = data['name'] ?? 'Unknown';
             _temperature = (data['main']['temp'] as num).toDouble();
+            _feelsLike = (data['main']['feels_like'] as num).toDouble();
+            _humidity = (data['main']['humidity'] as num).toDouble();
+            _windSpeed = (data['wind']['speed'] as num).toDouble();
             _condition = condition;
             _isLoading = false;
             _errorMessage = null;
@@ -155,7 +184,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
       } else {
         if (mounted) {
           setState(() {
-            _errorMessage = 'API Error: ${response.statusCode}. Check your API key.';
+            _errorMessage = 'API Error: ${response.statusCode}. Check your API key or city name.';
             _isLoading = false;
           });
         }
@@ -198,17 +227,79 @@ class _WeatherScreenState extends State<WeatherScreen> {
     }
   }
 
+  void _showSearchDialog() {
+    final TextEditingController controller = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Search City'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            decoration: const InputDecoration(
+              hintText: 'e.g., Kumasi, London, New York',
+            ),
+            onSubmitted: (value) {
+              Navigator.pop(context);
+              if (value.isNotEmpty) _loadWeather(cityQuery: value);
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                if (controller.text.isNotEmpty) {
+                  _loadWeather(cityQuery: controller.text);
+                }
+              },
+              child: const Text('Search'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
-      // AppBar holds the theme toggle and info button cleanly
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
         actions: [
+          // Unit Toggle
+          TextButton(
+            onPressed: () {
+              setState(() {
+                _isCelsius = !_isCelsius;
+              });
+              // Refresh with new units
+              _loadWeather(cityQuery: _cityName == 'Loading...' ? null : _cityName);
+            },
+            child: Text(
+              _isCelsius ? '°C' : '°F',
+              style: TextStyle(
+                color: colorScheme.onSurfaceVariant,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+          // Search City
+          IconButton(
+            icon: const Icon(Icons.search),
+            color: colorScheme.onSurfaceVariant,
+            onPressed: _showSearchDialog,
+          ),
+          // Theme Toggle
           IconButton(
             icon: Icon(isDarkMode ? Icons.light_mode : Icons.dark_mode),
             color: colorScheme.onSurfaceVariant,
@@ -217,6 +308,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
                   isDarkMode ? ThemeMode.light : ThemeMode.dark;
             },
           ),
+          // Info Page
           IconButton(
             icon: const Icon(Icons.info_outline),
             color: colorScheme.onSurfaceVariant,
@@ -232,98 +324,154 @@ class _WeatherScreenState extends State<WeatherScreen> {
       body: SafeArea(
         child: _isLoading
             ? const Center(child: CircularProgressIndicator())
-            : Center(
-                // Center ensures everything is perfectly in the middle
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.symmetric(horizontal: 20),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      if (_errorMessage != null)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 20),
-                          child: Text(
-                            _errorMessage!,
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: isDarkMode
-                                  ? Colors.orangeAccent
-                                  : Colors.orange[800],
-                              fontSize: 14,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ),
-                      Icon(
-                        Icons.location_on,
-                        color: colorScheme.onSurfaceVariant,
-                        size: 24,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        _cityName.toUpperCase(),
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: 20,
-                          letterSpacing: 2.0,
-                          fontWeight: FontWeight.w300,
-                          color: colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                      const SizedBox(height: 30),
-                      
-                      // Responsive Lottie Container
-                      LayoutBuilder(
-                        builder: (context, constraints) {
-                          double size = constraints.maxWidth * 0.7;
-                          if (size > 300) size = 300; // Max size
-                          return Container(
-                            width: size,
-                            height: size,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: isDarkMode
-                                  ? const Color(0xFF1E1E1E)
-                                  : const Color(0xFFE0E0E0),
-                            ),
-                            child: Lottie.asset(
-                              _getLottieAnimation(_condition, _temperature),
-                              fit: BoxFit.contain,
-                              repeat: true,
-                              errorBuilder: (_, __, ___) => Icon(
-                                Icons.cloud,
-                                size: size * 0.5,
-                                color: colorScheme.onSurfaceVariant,
+            : RefreshIndicator(
+                onRefresh: () => _loadWeather(cityQuery: _cityName == 'Loading...' ? null : _cityName),
+                color: colorScheme.onSurface,
+                backgroundColor: colorScheme.surface,
+                child: Center(
+                  child: SingleChildScrollView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        if (_errorMessage != null)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 20),
+                            child: Text(
+                              _errorMessage!,
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: isDarkMode
+                                    ? Colors.orangeAccent
+                                    : Colors.orange[800],
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
                               ),
                             ),
-                          );
-                        },
-                      ),
-                      
-                      const SizedBox(height: 30),
-                      Text(
-                        '${_temperature.toStringAsFixed(0)}°',
-                        style: TextStyle(
-                          fontSize: 80,
-                          fontWeight: FontWeight.w200,
-                          color: colorScheme.onSurface,
-                          height: 1.0,
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      Text(
-                        _condition,
-                        style: TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.w400,
+                          ),
+                        Icon(
+                          Icons.location_on,
                           color: colorScheme.onSurfaceVariant,
+                          size: 24,
                         ),
-                      ),
-                    ],
+                        const SizedBox(height: 8),
+                        Text(
+                          _cityName.toUpperCase(),
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 20,
+                            letterSpacing: 2.0,
+                            fontWeight: FontWeight.w300,
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(height: 20),
+                        
+                        // Responsive Lottie Container
+                        LayoutBuilder(
+                          builder: (context, constraints) {
+                            double size = constraints.maxWidth * 0.6;
+                            if (size > 250) size = 250; 
+                            return Container(
+                              width: size,
+                              height: size,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: isDarkMode
+                                    ? const Color(0xFF1E1E1E)
+                                    : const Color(0xFFE0E0E0),
+                              ),
+                              child: Lottie.asset(
+                                _getLottieAnimation(_condition, _temperature),
+                                fit: BoxFit.contain,
+                                repeat: true,
+                                errorBuilder: (_, __, ___) => Icon(
+                                  Icons.cloud,
+                                  size: size * 0.5,
+                                  color: colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                        
+                        const SizedBox(height: 20),
+                        Text(
+                          '${_temperature.toStringAsFixed(0)}°',
+                          style: TextStyle(
+                            fontSize: 80,
+                            fontWeight: FontWeight.w200,
+                            color: colorScheme.onSurface,
+                            height: 1.0,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Text(
+                          _condition,
+                          style: TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w400,
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(height: 40),
+
+                        // Extra Details Row
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            _buildDetailItem(
+                              Icons.thermostat,
+                              'Feels Like',
+                              '${_feelsLike.toStringAsFixed(0)}°',
+                              colorScheme,
+                            ),
+                            _buildDetailItem(
+                              Icons.water_drop,
+                              'Humidity',
+                              '${_humidity.toStringAsFixed(0)}%',
+                              colorScheme,
+                            ),
+                            _buildDetailItem(
+                              Icons.air,
+                              'Wind',
+                              '${_windSpeed.toStringAsFixed(1)} m/s',
+                              colorScheme,
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
       ),
+    );
+  }
+
+  Widget _buildDetailItem(IconData icon, String label, String value, ColorScheme colorScheme) {
+    return Column(
+      children: [
+        Icon(icon, color: colorScheme.onSurfaceVariant, size: 28),
+        const SizedBox(height: 8),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 14,
+            color: colorScheme.onSurfaceVariant.withOpacity(0.7),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w600,
+            color: colorScheme.onSurface,
+          ),
+        ),
+      ],
     );
   }
 }
