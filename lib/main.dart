@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:lottie/lottie.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/data/latest.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
 import 'package:flutter_timezone/flutter_timezone.dart';
@@ -98,7 +99,7 @@ class WeatherScreen extends StatefulWidget {
 }
 
 class _WeatherScreenState extends State<WeatherScreen> {
-  // 🔴 REPLACE WITH YOUR OPENWEATHERMAP API KEY
+  // API Key
   static const String apiKey = 'dc09ecccd1c2202e86924f13c2458d90';
 
   String _cityName = 'Loading...';
@@ -121,10 +122,18 @@ class _WeatherScreenState extends State<WeatherScreen> {
   double _lastLon = 0.0;
   String? _lastCity;
 
+  Map<String, String>? _delights;
+
   @override
   void initState() {
     super.initState();
     _loadWeather();
+    _loadDelights();
+  }
+
+  Future<void> _loadDelights() async {
+    final data = await SmallDelightsService().fetchDailyDelight();
+    if (mounted) setState(() => _delights = data);
   }
 
   // ================= DYNAMIC GREETING =================
@@ -172,14 +181,6 @@ class _WeatherScreenState extends State<WeatherScreen> {
 
   // ================= LOADING LOGIC =================
   Future<void> _loadWeather({String? cityQuery}) async {
-    if (apiKey == 'YOUR_OPENWEATHERMAP_API_KEY') {
-      setState(() {
-        _errorMessage = 'Please add your API Key in main.dart';
-        _isLoading = false;
-      });
-      return;
-    }
-
     setState(() {
       _isLoading = true;
       _errorMessage = null;
@@ -336,8 +337,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
   List<HourlyForecast> _parseHourly(List<dynamic> list) {
     return list.take(8).map((item) {
       return HourlyForecast(
-        time: DateTime.fromMillisecondsSinceEpoch(
-            (item['dt'] as int) * 1000),
+        time: DateTime.fromMillisecondsSinceEpoch((item['dt'] as int) * 1000),
         temp: (item['main']['temp'] as num).toDouble(),
         condition: item['weather'][0]['main'] as String,
       );
@@ -423,6 +423,18 @@ class _WeatherScreenState extends State<WeatherScreen> {
         city: _cityName,
         condition: tomorrow.condition,
         temp: tomorrow.temp,
+      );
+    }
+
+    // Sunrise/Sunset reminders
+    if (_sunrise != null && _sunset != null) {
+      NotificationService().scheduleSunriseReminder(
+        city: _cityName,
+        sunriseTime: _sunrise!,
+      );
+      NotificationService().scheduleSunsetReminder(
+        city: _cityName,
+        sunsetTime: _sunset!,
       );
     }
   }
@@ -711,7 +723,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
                             Align(
                               alignment: Alignment.centerLeft,
                               child: Text(
-                                '${_getGreeting()}, ...',
+                                _getGreeting(),
                                 style: TextStyle(
                                   fontSize: 14,
                                   letterSpacing: 0.5,
@@ -946,6 +958,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
                               const SizedBox(height: 24),
                             ],
 
+                            // Health Tip Card
                             Container(
                               width: double.infinity,
                               padding: const EdgeInsets.all(18),
@@ -1012,7 +1025,106 @@ class _WeatherScreenState extends State<WeatherScreen> {
                                 ],
                               ),
                             ),
+
                             const SizedBox(height: 20),
+
+                            // Daily Delight Card
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(18),
+                              decoration: BoxDecoration(
+                                color: isDarkMode
+                                    ? const Color(0xFF1E1E1E)
+                                    : Colors.white,
+                                borderRadius: BorderRadius.circular(20),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: isDarkMode
+                                        ? Colors.black26
+                                        : Colors.black.withOpacity(0.05),
+                                    blurRadius: 12,
+                                    offset: const Offset(0, 4),
+                                  ),
+                                ],
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Icon(Icons.auto_stories,
+                                          size: 18,
+                                          color: _forecastColor(_condition)),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        'Daily Delight',
+                                        style: TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.bold,
+                                          letterSpacing: 0.5,
+                                          color: colorScheme.onSurface,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 14),
+                                  if (_delights == null)
+                                    Center(
+                                      child: Padding(
+                                        padding: const EdgeInsets.symmetric(
+                                            vertical: 20),
+                                        child: SizedBox(
+                                          width: 20,
+                                          height: 20,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: colorScheme.onSurfaceVariant,
+                                          ),
+                                        ),
+                                      ),
+                                    )
+                                  else ...[
+                                    Text(
+                                      _delights!['quote'] ?? '',
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        fontStyle: FontStyle.italic,
+                                        height: 1.5,
+                                        color: colorScheme.onSurface,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 14),
+                                    Divider(
+                                        color: colorScheme.onSurfaceVariant
+                                            .withOpacity(0.2)),
+                                    const SizedBox(height: 14),
+                                    Row(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        const Icon(Icons.lightbulb_outline,
+                                            size: 16,
+                                            color: Color(0xFFFFB300)),
+                                        const SizedBox(width: 8),
+                                        Expanded(
+                                          child: Text(
+                                            _delights!['fact'] ?? '',
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              height: 1.5,
+                                              color: colorScheme
+                                                  .onSurfaceVariant,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+
+                            const SizedBox(height: 30),
                           ],
                         ),
                       ),
@@ -1197,6 +1309,103 @@ class _WeatherScreenState extends State<WeatherScreen> {
   }
 }
 
+// ================= SMALL DELIGHTS SERVICE =================
+class SmallDelightsService {
+  static final SmallDelightsService _instance =
+      SmallDelightsService._internal();
+  factory SmallDelightsService() => _instance;
+  SmallDelightsService._internal();
+
+  final List<String> _quoteApis = [
+    'https://quoteslate.vercel.app/api/quotes/random',
+    'https://api.quotable.io/random',
+  ];
+
+  final List<String> _factApis = [
+    'https://uselessfacts.jsph.pl/api/v2/facts/random',
+    'https://catfact.ninja/fact',
+  ];
+
+  Future<Map<String, String>> fetchDailyDelight() async {
+    final prefs = await SharedPreferences.getInstance();
+    final today = DateTime.now().toIso8601String().split('T')[0];
+    final cacheKey = 'daily_delight_$today';
+
+    final cached = prefs.getString(cacheKey);
+    if (cached != null) {
+      final parts = cached.split('|||');
+      if (parts.length == 2) {
+        return {'quote': parts[0], 'fact': parts[1]};
+      }
+    }
+
+    final quote = await _fetchQuote() ??
+        _fallbackQuotes[DateTime.now().day % _fallbackQuotes.length];
+    final fact = await _fetchFact() ??
+        _fallbackFacts[DateTime.now().day % _fallbackFacts.length];
+
+    await prefs.setString(cacheKey, '$quote|||$fact');
+
+    return {'quote': quote, 'fact': fact};
+  }
+
+  Future<String?> _fetchQuote() async {
+    for (final api in _quoteApis) {
+      try {
+        final res =
+            await http.get(Uri.parse(api)).timeout(const Duration(seconds: 5));
+        if (res.statusCode == 200) {
+          final data = json.decode(res.body);
+          // QuoteSlate format: [{"text": "...", "author": "..."}]
+          if (data is List && data.isNotEmpty) {
+            final q = data[0];
+            if (q['text'] != null && q['author'] != null) {
+              return '"${q['text']}" — ${q['author']}';
+            }
+          }
+          // Quotable format: {"content": "...", "author": "..."}
+          if (data is Map && data['content'] != null) {
+            return '"${data['content']}" — ${data['author']}';
+          }
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  Future<String?> _fetchFact() async {
+    for (final api in _factApis) {
+      try {
+        final res =
+            await http.get(Uri.parse(api)).timeout(const Duration(seconds: 5));
+        if (res.statusCode == 200) {
+          final data = json.decode(res.body);
+          if (data is Map && data['text'] != null) return data['text'];
+          if (data is Map && data['fact'] != null) return data['fact'];
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  final List<String> _fallbackQuotes = [
+    '"Every storm runs out of rain." — Maya Angelou',
+    '"Wherever you go, no matter what the weather, always bring your own sunshine." — Anthony J. D\'Angelo',
+    '"The sun is a daily reminder that we too can rise again from the darkness." — Unknown',
+    '"Life isn\'t about waiting for the storm to pass, it\'s about learning to dance in the rain." — Vivian Greene',
+    '"There is no such thing as bad weather, only different kinds of good weather." — John Ruskin',
+  ];
+
+  final List<String> _fallbackFacts = [
+    'Lightning strikes the Earth about 100 times every second.',
+    'A single thunderstorm can contain the energy of a nuclear bomb.',
+    'The coldest temperature ever recorded on Earth was -128.6°F (-89.2°C) in Antarctica.',
+    'Raindrops are not tear-shaped — they look like small hamburgers.',
+    'Snowflakes can fall as fast as 9 mph (14 km/h).',
+    'The highest temperature ever recorded in Ghana was 43.1°C in Navrongo.',
+  ];
+}
+
 // ================= INFO PAGE =================
 class InfoPage extends StatelessWidget {
   const InfoPage({super.key});
@@ -1359,7 +1568,6 @@ class NotificationService {
         iOS: iosDetails,
       );
 
-      // ✅ FIXED: Named parameters for flutter_local_notifications v20+
       await _plugin.zonedSchedule(
         id: id,
         title: title,
@@ -1381,8 +1589,7 @@ class NotificationService {
   }) async {
     final greeting =
         'Good morning! $city is ${temp.toStringAsFixed(0)}° with $condition.';
-    await _scheduleAt(
-        101, '🌅 Morning Briefing', '$greeting\n\n💡 $tip', 7, 0);
+    await _scheduleAt(101, '🌅 Morning Briefing', '$greeting\n\n💡 $tip', 7, 0);
   }
 
   Future<void> scheduleAfternoonCheck({
@@ -1392,8 +1599,7 @@ class NotificationService {
   }) async {
     final body =
         '$city is ${temp.toStringAsFixed(0)}° with $condition. Stay safe and hydrated!';
-    await _scheduleAt(
-        102, '☀️ Afternoon Weather Update', body, 15, 0);
+    await _scheduleAt(102, '☀️ Afternoon Weather Update', body, 15, 0);
   }
 
   Future<void> scheduleTomorrowPreview({
@@ -1404,5 +1610,33 @@ class NotificationService {
     final body =
         'Tomorrow in $city: $condition, around ${temp.toStringAsFixed(0)}°. Plan ahead!';
     await _scheduleAt(103, '🌙 Tomorrow\'s Weather', body, 20, 0);
+  }
+
+  Future<void> scheduleSunriseReminder({
+    required String city,
+    required DateTime sunriseTime,
+  }) async {
+    final remindAt = sunriseTime.subtract(const Duration(minutes: 15));
+    await _scheduleAt(
+      104,
+      '🌅 Golden Hour in $city',
+      'Sunrise is in 15 minutes. Perfect time for photos or a morning walk!',
+      remindAt.hour,
+      remindAt.minute,
+    );
+  }
+
+  Future<void> scheduleSunsetReminder({
+    required String city,
+    required DateTime sunsetTime,
+  }) async {
+    final remindAt = sunsetTime.subtract(const Duration(minutes: 15));
+    await _scheduleAt(
+      105,
+      '🌇 Sunset Soon in $city',
+      'Sunset in 15 minutes. Step outside and enjoy the view!',
+      remindAt.hour,
+      remindAt.minute,
+    );
   }
 }

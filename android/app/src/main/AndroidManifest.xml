@@ -1,6 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- ============ PERMISSIONS ============ -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
@@ -12,7 +11,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
-        android:label="Weather Hub"
+        android:label="SonnamiSky"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
 
@@ -39,8 +38,6 @@
             android:name="flutterEmbedding"
             android:value="2" />
 
-        <!-- ============ SCHEDULED NOTIFICATION RECEIVERS ============ -->
-        <!-- These MUST be inside <application> for scheduled notifications to work -->
         <receiver
             android:exported="false"
             android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver" />
@@ -58,7 +55,6 @@
 
     </application>
 
-    <!-- ============ QUERIES ============ -->
     <queries>
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
