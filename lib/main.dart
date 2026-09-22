@@ -1,15 +1,27 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:lottie/lottie.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:timezone/data/latest.dart' as tzdata;
+import 'package:timezone/timezone.dart' as tz;
+import 'package:flutter_timezone/flutter_timezone.dart';
 
 // ================= THEME NOTIFIER =================
 final ValueNotifier<ThemeMode> themeNotifier = ValueNotifier(ThemeMode.dark);
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  tzdata.initializeTimeZones();
+  try {
+    // FIXED: New flutter_timezone v4 API returns TimezoneInfo object
+    final tzInfo = await FlutterTimezone.getLocalTimezone();
+    tz.setLocalLocation(tz.getLocation(tzInfo.identifier));
+  } catch (e) {
+    debugPrint('Timezone setup failed: $e');
+  }
   runApp(const WeatherHubApp());
   NotificationService().init();
 }
@@ -51,12 +63,31 @@ class WeatherHubApp extends StatelessWidget {
   }
 }
 
-// ================= FORECAST MODEL =================
+// ================= FORECAST MODELS =================
 class ForecastDay {
   final DateTime date;
   final double temp;
+  final double maxTemp;
+  final double minTemp;
   final String condition;
-  ForecastDay({required this.date, required this.temp, required this.condition});
+  ForecastDay({
+    required this.date,
+    required this.temp,
+    required this.maxTemp,
+    required this.minTemp,
+    required this.condition,
+  });
+}
+
+class HourlyForecast {
+  final DateTime time;
+  final double temp;
+  final String condition;
+  HourlyForecast({
+    required this.time,
+    required this.temp,
+    required this.condition,
+  });
 }
 
 // ================= MAIN SCREEN =================
@@ -69,7 +100,7 @@ class WeatherScreen extends StatefulWidget {
 
 class _WeatherScreenState extends State<WeatherScreen> {
   // 🔴 REPLACE WITH YOUR OPENWEATHERMAP API KEY
-  static const String apiKey = 'dc09ecccd1c2202e86924f13c2458d90';
+  static const String apiKey = 'YOUR_OPENWEATHERMAP_API_KEY';
 
   String _cityName = 'Loading...';
   double _temperature = 0.0;
@@ -81,15 +112,63 @@ class _WeatherScreenState extends State<WeatherScreen> {
   bool _isCelsius = true;
   String? _errorMessage;
 
+  DateTime? _sunrise;
+  DateTime? _sunset;
+
   List<ForecastDay> _forecast = [];
+  List<HourlyForecast> _hourly = [];
+
   double _lastLat = 0.0;
   double _lastLon = 0.0;
-  String? _lastCity; // null = GPS mode, otherwise a city name
+  String? _lastCity;
 
   @override
   void initState() {
     super.initState();
     _loadWeather();
+  }
+
+  // ================= DYNAMIC GREETING =================
+  String _getGreeting() {
+    final hour = DateTime.now().hour;
+    if (hour < 12) return 'Good morning';
+    if (hour < 17) return 'Good afternoon';
+    if (hour < 21) return 'Good evening';
+    return 'Good night';
+  }
+
+  // ================= SMART SUMMARY =================
+  String _getSmartSummary() {
+    final c = _condition.toLowerCase();
+    final temp = _temperature;
+    String base;
+
+    if (c.contains('rain') || c.contains('drizzle')) {
+      base = 'Rainy conditions right now';
+    } else if (c.contains('thunder')) {
+      base = 'Thunderstorms in your area';
+    } else if (c.contains('clear') && temp >= 30) {
+      base = 'Hot and sunny outside';
+    } else if (c.contains('clear')) {
+      base = 'Clear skies and pleasant';
+    } else if (c.contains('cloud')) {
+      base = 'Cloudy skies today';
+    } else {
+      base = 'Current conditions: $_condition';
+    }
+
+    final rainSoon = _hourly.take(3).where((h) {
+      final cond = h.condition.toLowerCase();
+      return cond.contains('rain') ||
+          cond.contains('drizzle') ||
+          cond.contains('thunder');
+    }).toList();
+
+    if (rainSoon.isNotEmpty && !c.contains('rain')) {
+      base += '. Rain expected around ${_formatTime(rainSoon.first.time)}';
+    }
+
+    return base;
   }
 
   // ================= LOADING LOGIC =================
@@ -134,15 +213,14 @@ class _WeatherScreenState extends State<WeatherScreen> {
         }
       } else {
         _lastCity = null;
-        final pos = await _determinePosition()
-            .timeout(const Duration(seconds: 15));
+        final pos =
+            await _determinePosition().timeout(const Duration(seconds: 15));
         _lastLat = pos.latitude;
         _lastLon = pos.longitude;
         await _fetchCurrent(_lastLat, _lastLon);
         await _fetchForecast(_lastLat, _lastLon);
       }
     } catch (e) {
-      // Fallback: last known position
       try {
         final last = await Geolocator.getLastKnownPosition();
         if (last != null) {
@@ -153,7 +231,6 @@ class _WeatherScreenState extends State<WeatherScreen> {
           return;
         }
       } catch (_) {}
-      // Final fallback: Accra
       if (mounted) {
         setState(() => _errorMessage = 'Using Accra, Ghana (GPS unavailable)');
       }
@@ -221,9 +298,14 @@ class _WeatherScreenState extends State<WeatherScreen> {
         _windSpeed = (data['wind']['speed'] as num).toDouble();
         _condition = condition;
         _errorMessage = null;
+        try {
+          _sunrise = DateTime.fromMillisecondsSinceEpoch(
+              (data['sys']['sunrise'] as int) * 1000);
+          _sunset = DateTime.fromMillisecondsSinceEpoch(
+              (data['sys']['sunset'] as int) * 1000);
+        } catch (_) {}
       });
     }
-    _checkWeatherAndNotify(condition);
   }
 
   Future<void> _fetchForecast(double lat, double lon) async {
@@ -238,10 +320,12 @@ class _WeatherScreenState extends State<WeatherScreen> {
         final list = data['list'] as List;
         if (mounted) {
           setState(() {
+            _hourly = _parseHourly(list);
             _forecast = _parseForecast(list);
             _isLoading = false;
           });
         }
+        _scheduleNotifications();
       } else {
         if (mounted) setState(() => _isLoading = false);
       }
@@ -250,7 +334,17 @@ class _WeatherScreenState extends State<WeatherScreen> {
     }
   }
 
-  // Parse the 3-hour forecast list into 5 unique days
+  List<HourlyForecast> _parseHourly(List<dynamic> list) {
+    return list.take(8).map((item) {
+      return HourlyForecast(
+        time: DateTime.fromMillisecondsSinceEpoch(
+            (item['dt'] as int) * 1000),
+        temp: (item['main']['temp'] as num).toDouble(),
+        condition: item['weather'][0]['main'] as String,
+      );
+    }).toList();
+  }
+
   List<ForecastDay> _parseForecast(List<dynamic> list) {
     final Map<String, List<dynamic>> byDay = {};
     for (var item in list) {
@@ -267,7 +361,6 @@ class _WeatherScreenState extends State<WeatherScreen> {
 
     return keys.map((d) {
       final entries = byDay[d]!;
-      // Pick entry closest to 12:00
       dynamic best = entries.first;
       int bestDiff = 999;
       for (var e in entries) {
@@ -279,30 +372,66 @@ class _WeatherScreenState extends State<WeatherScreen> {
           best = e;
         }
       }
+      double maxT = -999, minT = 999;
+      for (var e in entries) {
+        final t = (e['main']['temp'] as num).toDouble();
+        if (t > maxT) maxT = t;
+        if (t < minT) minT = t;
+      }
       return ForecastDay(
         date: DateTime.parse(d),
         temp: (best['main']['temp'] as num).toDouble(),
+        maxTemp: maxT,
+        minTemp: minT,
         condition: best['weather'][0]['main'] as String,
       );
     }).toList();
   }
 
   // ================= NOTIFICATIONS =================
-  void _checkWeatherAndNotify(String condition) {
-    final c = condition.toLowerCase();
-    if (c.contains('rain') || c.contains('thunder') || c.contains('drizzle')) {
+  void _scheduleNotifications() {
+    final rainSoon = _hourly.take(3).where((h) {
+      final c = h.condition.toLowerCase();
+      return c.contains('rain') ||
+          c.contains('drizzle') ||
+          c.contains('thunder');
+    }).toList();
+
+    if (rainSoon.isNotEmpty) {
       NotificationService().showNotification(
-        '🌧️ Weather Alert in $_cityName',
-        "It's $condition outside. Don't forget your umbrella!",
-        id: 1,
-      );
-    } else if (c.contains('clear') && _temperature >= 30) {
-      NotificationService().showNotification(
-        '☀️ Stay Hydrated in $_cityName',
-        'Hot day at ${_temperature.toStringAsFixed(0)}°. Drink plenty of water!',
-        id: 2,
+        '🌧️ Rain incoming in $_cityName',
+        "Rain expected around ${_formatTime(rainSoon.first.time)}. Carry an umbrella!",
+        id: 10,
       );
     }
+
+    NotificationService().scheduleMorningBriefing(
+      city: _cityName,
+      temp: _temperature,
+      condition: _condition,
+      tip: _getHealthTip(_condition, _temperature),
+    );
+
+    NotificationService().scheduleAfternoonCheck(
+      city: _cityName,
+      temp: _temperature,
+      condition: _condition,
+    );
+
+    if (_forecast.isNotEmpty) {
+      final tomorrow = _forecast.first;
+      NotificationService().scheduleTomorrowPreview(
+        city: _cityName,
+        condition: tomorrow.condition,
+        temp: tomorrow.temp,
+      );
+    }
+  }
+
+  String _formatTime(DateTime t) {
+    final h12 = t.hour % 12 == 0 ? 12 : t.hour % 12;
+    final ampm = t.hour >= 12 ? 'PM' : 'AM';
+    return '$h12 $ampm';
   }
 
   // ================= HEALTH TIPS =================
@@ -374,7 +503,9 @@ class _WeatherScreenState extends State<WeatherScreen> {
     final c = condition.toLowerCase();
     if (c.contains('clear')) return const Color(0xFFFFB300);
     if (c.contains('cloud')) return const Color(0xFF90A4AE);
-    if (c.contains('rain') || c.contains('drizzle')) return const Color(0xFF4FC3F7);
+    if (c.contains('rain') || c.contains('drizzle')) {
+      return const Color(0xFF4FC3F7);
+    }
     if (c.contains('thunder')) return const Color(0xFF9575CD);
     if (c.contains('snow')) return const Color(0xFF81D4FA);
     return const Color(0xFF90A4AE);
@@ -385,7 +516,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
     return names[d.weekday - 1];
   }
 
-  // ================= GRADIENT BACKGROUND =================
+  // ================= BACKGROUND GRADIENT =================
   LinearGradient _getBackgroundGradient(String condition, bool isDark) {
     final c = condition.toLowerCase();
     if (isDark) {
@@ -410,13 +541,11 @@ class _WeatherScreenState extends State<WeatherScreen> {
           colors: [Color(0xFF1B1B2F), Color(0xFF121212)],
         );
       }
-      if (c.contains('cloud')) {
-        return const LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Color(0xFF1F1F1F), Color(0xFF121212)],
-        );
-      }
+      return const LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [Color(0xFF1F1F1F), Color(0xFF121212)],
+      );
     } else {
       if (c.contains('clear')) {
         return const LinearGradient(
@@ -439,21 +568,12 @@ class _WeatherScreenState extends State<WeatherScreen> {
           colors: [Color(0xFFEDE7F6), Color(0xFFF5F5F5)],
         );
       }
-      if (c.contains('cloud')) {
-        return const LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Color(0xFFECEFF1), Color(0xFFF5F5F5)],
-        );
-      }
+      return const LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [Color(0xFFECEFF1), Color(0xFFF5F5F5)],
+      );
     }
-    return LinearGradient(
-      begin: Alignment.topCenter,
-      end: Alignment.bottomCenter,
-      colors: isDark
-          ? [const Color(0xFF1A1A1A), const Color(0xFF121212)]
-          : [const Color(0xFFEEEEEE), const Color(0xFFF5F5F5)],
-    );
   }
 
   // ================= SEARCH DIALOG =================
@@ -463,7 +583,8 @@ class _WeatherScreenState extends State<WeatherScreen> {
       context: context,
       builder: (context) {
         return AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
           title: const Text('Search City'),
           content: TextField(
             controller: controller,
@@ -510,6 +631,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
         actions: [
           TextButton(
             onPressed: () {
+              HapticFeedback.lightImpact();
               setState(() => _isCelsius = !_isCelsius);
               _loadWeather(cityQuery: _lastCity);
             },
@@ -525,12 +647,16 @@ class _WeatherScreenState extends State<WeatherScreen> {
           IconButton(
             icon: const Icon(Icons.search),
             color: colorScheme.onSurfaceVariant,
-            onPressed: _showSearchDialog,
+            onPressed: () {
+              HapticFeedback.lightImpact();
+              _showSearchDialog();
+            },
           ),
           IconButton(
             icon: Icon(isDarkMode ? Icons.light_mode : Icons.dark_mode),
             color: colorScheme.onSurfaceVariant,
             onPressed: () {
+              HapticFeedback.lightImpact();
               themeNotifier.value =
                   isDarkMode ? ThemeMode.light : ThemeMode.dark;
             },
@@ -539,6 +665,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
             icon: const Icon(Icons.info_outline),
             color: colorScheme.onSurfaceVariant,
             onPressed: () {
+              HapticFeedback.lightImpact();
               Navigator.push(
                 context,
                 MaterialPageRoute(builder: (context) => const InfoPage()),
@@ -564,6 +691,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
                       child: ConstrainedBox(
                         constraints: const BoxConstraints(maxWidth: 500),
                         child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
                             if (_errorMessage != null)
                               Padding(
@@ -581,79 +709,132 @@ class _WeatherScreenState extends State<WeatherScreen> {
                                 ),
                               ),
 
-                            // Location + City
-                            Icon(Icons.location_on,
-                                color: colorScheme.onSurfaceVariant, size: 22),
-                            const SizedBox(height: 6),
-                            Text(
-                              _cityName.toUpperCase(),
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                fontSize: 18,
-                                letterSpacing: 2.5,
-                                fontWeight: FontWeight.w400,
-                                color: colorScheme.onSurfaceVariant,
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text(
+                                '${_getGreeting()}, Bismark',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  letterSpacing: 0.5,
+                                  color: colorScheme.onSurfaceVariant,
+                                ),
                               ),
                             ),
-                            const SizedBox(height: 16),
+                            const SizedBox(height: 6),
 
-                            // Lottie Animation
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.location_on,
+                                    color: colorScheme.onSurfaceVariant,
+                                    size: 18),
+                                const SizedBox(width: 4),
+                                Text(
+                                  _cityName.toUpperCase(),
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    letterSpacing: 2.5,
+                                    fontWeight: FontWeight.w400,
+                                    color: colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+
                             LayoutBuilder(
                               builder: (context, constraints) {
-                                double size = constraints.maxWidth * 0.55;
-                                if (size > 220) size = 220;
-                                return SizedBox(
-                                  width: size,
-                                  height: size,
-                                  child: Lottie.asset(
-                                    _getLottieAnimation(
-                                        _condition, _temperature),
-                                    fit: BoxFit.contain,
-                                    repeat: true,
-                                    errorBuilder: (_, __, ___) => Icon(
-                                      Icons.cloud,
-                                      size: size * 0.5,
-                                      color: colorScheme.onSurfaceVariant,
+                                double size = constraints.maxWidth * 0.5;
+                                if (size > 200) size = 200;
+                                return Center(
+                                  child: SizedBox(
+                                    width: size,
+                                    height: size,
+                                    child: Lottie.asset(
+                                      _getLottieAnimation(
+                                          _condition, _temperature),
+                                      fit: BoxFit.contain,
+                                      repeat: true,
+                                      errorBuilder: (_, __, ___) => Icon(
+                                        Icons.cloud,
+                                        size: size * 0.5,
+                                        color: colorScheme.onSurfaceVariant,
+                                      ),
                                     ),
                                   ),
                                 );
                               },
                             ),
-                            const SizedBox(height: 10),
+                            const SizedBox(height: 6),
 
-                            // Animated Temperature
                             TweenAnimationBuilder<double>(
-                              tween: Tween(
-                                  begin: 0, end: _temperature),
+                              tween: Tween(begin: 0, end: _temperature),
                               duration: const Duration(milliseconds: 900),
                               curve: Curves.easeOutCubic,
                               builder: (context, value, child) {
-                                return Text(
-                                  '${value.toStringAsFixed(0)}°',
-                                  style: TextStyle(
-                                    fontSize: 88,
-                                    fontWeight: FontWeight.w200,
-                                    color: colorScheme.onSurface,
-                                    height: 1.0,
+                                return Center(
+                                  child: Text(
+                                    '${value.toStringAsFixed(0)}°',
+                                    style: TextStyle(
+                                      fontSize: 84,
+                                      fontWeight: FontWeight.w200,
+                                      color: colorScheme.onSurface,
+                                      height: 1.0,
+                                    ),
                                   ),
                                 );
                               },
                             ),
-                            const SizedBox(height: 6),
-                            Text(
-                              _condition.toUpperCase(),
-                              style: TextStyle(
-                                fontSize: 16,
-                                letterSpacing: 1.5,
-                                fontWeight: FontWeight.w500,
-                                color: colorScheme.onSurfaceVariant,
+                            const SizedBox(height: 4),
+                            Center(
+                              child: Text(
+                                _condition.toUpperCase(),
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  letterSpacing: 2.0,
+                                  fontWeight: FontWeight.w500,
+                                  color: colorScheme.onSurfaceVariant,
+                                ),
                               ),
                             ),
-                            const SizedBox(height: 24),
+                            const SizedBox(height: 8),
 
-                            // Details Row
+                            Container(
+                              margin: const EdgeInsets.symmetric(vertical: 8),
+                              padding: const EdgeInsets.all(14),
+                              decoration: BoxDecoration(
+                                color: isDarkMode
+                                    ? const Color(0xFF1E1E1E)
+                                    : Colors.white.withOpacity(0.6),
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.auto_awesome,
+                                    size: 18,
+                                    color: _forecastColor(_condition),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Text(
+                                      _getSmartSummary(),
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        height: 1.4,
+                                        color: colorScheme.onSurface,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+
+                            const SizedBox(height: 10),
                             Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                              mainAxisAlignment:
+                                  MainAxisAlignment.spaceEvenly,
                               children: [
                                 _buildDetailItem(
                                   Icons.thermostat,
@@ -670,14 +851,72 @@ class _WeatherScreenState extends State<WeatherScreen> {
                                 _buildDetailItem(
                                   Icons.air,
                                   'Wind',
-                                  '${_windSpeed.toStringAsFixed(1)} m/s',
+                                  '${_windSpeed.toStringAsFixed(1)}',
                                   colorScheme,
                                 ),
                               ],
                             ),
-                            const SizedBox(height: 30),
+                            const SizedBox(height: 24),
 
-                            // 5-Day Forecast Section
+                            if (_sunrise != null && _sunset != null) ...[
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: _buildSunCard(
+                                      'Sunrise',
+                                      _formatTime(_sunrise!),
+                                      Icons.wb_twilight,
+                                      const Color(0xFFFFB300),
+                                      colorScheme,
+                                      isDarkMode,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: _buildSunCard(
+                                      'Sunset',
+                                      _formatTime(_sunset!),
+                                      Icons.nights_stay_outlined,
+                                      const Color(0xFF5C6BC0),
+                                      colorScheme,
+                                      isDarkMode,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 24),
+                            ],
+
+                            if (_hourly.isNotEmpty) ...[
+                              Align(
+                                alignment: Alignment.centerLeft,
+                                child: Text(
+                                  'NEXT 24 HOURS',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    letterSpacing: 2.0,
+                                    fontWeight: FontWeight.w600,
+                                    color: colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              SizedBox(
+                                height: 110,
+                                child: ListView.builder(
+                                  scrollDirection: Axis.horizontal,
+                                  itemCount: _hourly.length,
+                                  itemBuilder: (context, index) {
+                                    return _buildHourlyCard(
+                                        _hourly[index],
+                                        colorScheme,
+                                        isDarkMode);
+                                  },
+                                ),
+                              ),
+                              const SizedBox(height: 24),
+                            ],
+
                             if (_forecast.isNotEmpty) ...[
                               Align(
                                 alignment: Alignment.centerLeft,
@@ -698,16 +937,16 @@ class _WeatherScreenState extends State<WeatherScreen> {
                                   scrollDirection: Axis.horizontal,
                                   itemCount: _forecast.length,
                                   itemBuilder: (context, index) {
-                                    final day = _forecast[index];
                                     return _buildForecastCard(
-                                        day, colorScheme, isDarkMode);
+                                        _forecast[index],
+                                        colorScheme,
+                                        isDarkMode);
                                   },
                                 ),
                               ),
                               const SizedBox(height: 24),
                             ],
 
-                            // Health Tip Card
                             Container(
                               width: double.infinity,
                               padding: const EdgeInsets.all(18),
@@ -764,8 +1003,8 @@ class _WeatherScreenState extends State<WeatherScreen> {
                                           style: TextStyle(
                                             fontSize: 13,
                                             height: 1.5,
-                                            color: colorScheme
-                                                .onSurfaceVariant,
+                                            color:
+                                                colorScheme.onSurfaceVariant,
                                           ),
                                         ),
                                       ],
@@ -790,12 +1029,12 @@ class _WeatherScreenState extends State<WeatherScreen> {
       IconData icon, String label, String value, ColorScheme colorScheme) {
     return Column(
       children: [
-        Icon(icon, color: colorScheme.onSurfaceVariant, size: 26),
-        const SizedBox(height: 8),
+        Icon(icon, color: colorScheme.onSurfaceVariant, size: 24),
+        const SizedBox(height: 6),
         Text(
           label,
           style: TextStyle(
-            fontSize: 12,
+            fontSize: 11,
             color: colorScheme.onSurfaceVariant.withOpacity(0.7),
           ),
         ),
@@ -803,7 +1042,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
         Text(
           value,
           style: TextStyle(
-            fontSize: 15,
+            fontSize: 14,
             fontWeight: FontWeight.w600,
             color: colorScheme.onSurface,
           ),
@@ -812,12 +1051,100 @@ class _WeatherScreenState extends State<WeatherScreen> {
     );
   }
 
+  Widget _buildSunCard(String label, String time, IconData icon, Color accent,
+      ColorScheme colorScheme, bool isDark) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [
+          BoxShadow(
+            color: isDark ? Colors.black26 : Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: accent, size: 28),
+          const SizedBox(width: 12),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: colorScheme.onSurfaceVariant.withOpacity(0.7),
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                time,
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                  color: colorScheme.onSurface,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHourlyCard(
+      HourlyForecast h, ColorScheme colorScheme, bool isDark) {
+    return Container(
+      width: 70,
+      margin: const EdgeInsets.only(right: 10),
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: isDark ? Colors.black26 : Colors.black.withOpacity(0.05),
+            blurRadius: 8,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            _formatTime(h.time),
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: colorScheme.onSurfaceVariant,
+            ),
+          ),
+          Icon(_forecastIcon(h.condition),
+              color: _forecastColor(h.condition), size: 22),
+          Text(
+            '${h.temp.toStringAsFixed(0)}°',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: colorScheme.onSurface,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildForecastCard(
       ForecastDay day, ColorScheme colorScheme, bool isDark) {
     return Container(
-      width: 82,
+      width: 84,
       margin: const EdgeInsets.only(right: 12),
-      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
       decoration: BoxDecoration(
         color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
         borderRadius: BorderRadius.circular(18),
@@ -841,18 +1168,29 @@ class _WeatherScreenState extends State<WeatherScreen> {
               color: colorScheme.onSurfaceVariant,
             ),
           ),
-          Icon(
-            _forecastIcon(day.condition),
-            color: _forecastColor(day.condition),
-            size: 28,
-          ),
-          Text(
-            '${day.temp.toStringAsFixed(0)}°',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-              color: colorScheme.onSurface,
-            ),
+          Icon(_forecastIcon(day.condition),
+              color: _forecastColor(day.condition), size: 26),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                '${day.maxTemp.toStringAsFixed(0)}°',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: colorScheme.onSurface,
+                ),
+              ),
+              const SizedBox(width: 4),
+              Text(
+                '${day.minTemp.toStringAsFixed(0)}°',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: colorScheme.onSurfaceVariant.withOpacity(0.6),
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -996,5 +1334,75 @@ class NotificationService {
     } catch (e) {
       debugPrint('Notification show failed: $e');
     }
+  }
+
+  Future<void> _scheduleAt(
+      int id, String title, String body, int hour, int minute) async {
+    try {
+      final now = tz.TZDateTime.now(tz.local);
+      var scheduled =
+          tz.TZDateTime(tz.local, now.year, now.month, now.day, hour, minute);
+      if (scheduled.isBefore(now)) {
+        scheduled = scheduled.add(const Duration(days: 1));
+      }
+
+      const AndroidNotificationDetails androidDetails =
+          AndroidNotificationDetails(
+        'weather_scheduled',
+        'Scheduled Weather Updates',
+        channelDescription: 'Daily weather briefings and reminders',
+        importance: Importance.high,
+        priority: Priority.high,
+      );
+      const DarwinNotificationDetails iosDetails = DarwinNotificationDetails();
+      const NotificationDetails details = NotificationDetails(
+        android: androidDetails,
+        iOS: iosDetails,
+      );
+
+      await _plugin.zonedSchedule(
+        id,
+        title,
+        body,
+        scheduled,
+        details,
+        androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+      );
+    } catch (e) {
+      debugPrint('Scheduled notification failed: $e');
+    }
+  }
+
+  Future<void> scheduleMorningBriefing({
+    required String city,
+    required double temp,
+    required String condition,
+    required String tip,
+  }) async {
+    final greeting =
+        'Good morning! $city is ${temp.toStringAsFixed(0)}° with $condition.';
+    await _scheduleAt(
+        101, '🌅 Morning Briefing', '$greeting\n\n💡 $tip', 7, 0);
+  }
+
+  Future<void> scheduleAfternoonCheck({
+    required String city,
+    required double temp,
+    required String condition,
+  }) async {
+    final body =
+        '$city is ${temp.toStringAsFixed(0)}° with $condition. Stay safe and hydrated!';
+    await _scheduleAt(
+        102, '☀️ Afternoon Weather Update', body, 15, 0);
+  }
+
+  Future<void> scheduleTomorrowPreview({
+    required String city,
+    required String condition,
+    required double temp,
+  }) async {
+    final body =
+        'Tomorrow in $city: $condition, around ${temp.toStringAsFixed(0)}°. Plan ahead!';
+    await _scheduleAt(103, '🌙 Tomorrow\'s Weather', body, 20, 0);
   }
 }
