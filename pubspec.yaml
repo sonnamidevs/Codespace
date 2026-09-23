@@ -2,7 +2,7 @@ name: weatherhub
 description: "A Weather app by Sonnami Develops"
 publish_to: 'none'
 
-version: 1.0.0+1
+version: 1.1.0+2
 
 environment:
   sdk: ^3.11.5
@@ -19,6 +19,8 @@ dependencies:
   timezone: ^0.10.1
   flutter_timezone: ^5.1.0
   shared_preferences: ^2.2.0
+  github_release_apk_updater: ^1.0.7
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
