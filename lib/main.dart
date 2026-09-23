@@ -426,7 +426,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
   }) async {
     final sw = Stopwatch()..start();
     try {
-      final supportedAbis = await _updater.getSupportedAbis();
+      final supportedAbis = await _updater.getSupportedAbis() ?? <String>[];
       final release = await _apiService.getLatestGithubAPKRelease(
         ownerGithub: kGithubOwner,
         repositoryGithub: kGithubRepo,
@@ -3235,7 +3235,7 @@ class _DebugPanelPageState extends State<DebugPanelPage> {
   Future<void> _loadInfo() async {
     try {
       final v = await _updater.getCurrentAppVersion();
-      final abis = await _updater.getSupportedAbis();
+      final abis = await _updater.getSupportedAbis() ?? <String>[];
       String? latest;
       String? asset;
       try {
