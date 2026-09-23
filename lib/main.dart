@@ -19,6 +19,47 @@ const String kGithubOwner = 'sonnamidevs';
 const String kGithubRepo = 'sonnamidevs.github.io';
 const String kApkAssetName = 'WeatherHub.apk';
 
+// ================= DEBUG METRICS SERVICE =================
+class DebugMetrics {
+  static final DebugMetrics _i = DebugMetrics._internal();
+  factory DebugMetrics() => _i;
+  DebugMetrics._internal();
+
+  DateTime? lastUpdateCheck;
+  DateTime? lastWeatherFetch;
+  DateTime? lastForecastFetch;
+  DateTime? lastConfidenceFetch;
+  int? lastWeatherFetchMs;
+  int? lastForecastFetchMs;
+  int? lastUpdateCheckMs;
+  int? lastConfidenceFetchMs;
+  String? lastWeatherStatus;
+  String? lastForecastStatus;
+  String? latestAvailableVersion;
+  int delightCacheHits = 0;
+  int delightCacheMisses = 0;
+  int notificationCount = 0;
+  int cacheRestores = 0;
+
+  void reset() {
+    lastUpdateCheck = null;
+    lastWeatherFetch = null;
+    lastForecastFetch = null;
+    lastConfidenceFetch = null;
+    lastWeatherFetchMs = null;
+    lastForecastFetchMs = null;
+    lastUpdateCheckMs = null;
+    lastConfidenceFetchMs = null;
+    lastWeatherStatus = null;
+    lastForecastStatus = null;
+    latestAvailableVersion = null;
+    delightCacheHits = 0;
+    delightCacheMisses = 0;
+    notificationCount = 0;
+    cacheRestores = 0;
+  }
+}
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   tzdata.initializeTimeZones();
@@ -69,7 +110,7 @@ class WeatherHubApp extends StatelessWidget {
   }
 }
 
-// ================= ENHANCED FORECAST MODELS =================
+// ================= FORECAST MODELS =================
 class ForecastDay {
   final DateTime date;
   final double temp;
@@ -104,6 +145,46 @@ class ForecastDay {
     this.sunrise,
     this.sunset,
   });
+
+  Map<String, dynamic> toJson() => {
+        'date': date.toIso8601String(),
+        'temp': temp,
+        'maxTemp': maxTemp,
+        'minTemp': minTemp,
+        'feelsLikeMax': feelsLikeMax,
+        'feelsLikeMin': feelsLikeMin,
+        'condition': condition,
+        'detailedCondition': detailedCondition,
+        'weatherCode': weatherCode,
+        'precipitationProbability': precipitationProbability,
+        'uvIndex': uvIndex,
+        'windSpeedMax': windSpeedMax,
+        'humidityAvg': humidityAvg,
+        'sunrise': sunrise?.toIso8601String(),
+        'sunset': sunset?.toIso8601String(),
+      };
+
+  factory ForecastDay.fromJson(Map<String, dynamic> j) => ForecastDay(
+        date: DateTime.parse(j['date'] as String),
+        temp: (j['temp'] as num).toDouble(),
+        maxTemp: (j['maxTemp'] as num).toDouble(),
+        minTemp: (j['minTemp'] as num).toDouble(),
+        feelsLikeMax: (j['feelsLikeMax'] as num).toDouble(),
+        feelsLikeMin: (j['feelsLikeMin'] as num).toDouble(),
+        condition: j['condition'] as String,
+        detailedCondition: j['detailedCondition'] as String,
+        weatherCode: j['weatherCode'] as int,
+        precipitationProbability:
+            (j['precipitationProbability'] as num).toDouble(),
+        uvIndex: (j['uvIndex'] as num).toDouble(),
+        windSpeedMax: (j['windSpeedMax'] as num).toDouble(),
+        humidityAvg: (j['humidityAvg'] as num).toDouble(),
+        sunrise: j['sunrise'] != null
+            ? DateTime.parse(j['sunrise'] as String)
+            : null,
+        sunset:
+            j['sunset'] != null ? DateTime.parse(j['sunset'] as String) : null,
+      );
 }
 
 class HourlyForecast {
@@ -119,6 +200,174 @@ class HourlyForecast {
     required this.precipitationProbability,
     required this.humidity,
   });
+
+  Map<String, dynamic> toJson() => {
+        'time': time.toIso8601String(),
+        'temp': temp,
+        'condition': condition,
+        'precipitationProbability': precipitationProbability,
+        'humidity': humidity,
+      };
+
+  factory HourlyForecast.fromJson(Map<String, dynamic> j) => HourlyForecast(
+        time: DateTime.parse(j['time'] as String),
+        temp: (j['temp'] as num).toDouble(),
+        condition: j['condition'] as String,
+        precipitationProbability:
+            (j['precipitationProbability'] as num).toDouble(),
+        humidity: (j['humidity'] as num).toDouble(),
+      );
+}
+
+// ================= CONFIDENCE MODELS =================
+enum ForecastConfidence { high, medium, low, unknown }
+
+extension ForecastConfidenceLabel on ForecastConfidence {
+  String get label {
+    switch (this) {
+      case ForecastConfidence.high:
+        return 'HIGH';
+      case ForecastConfidence.medium:
+        return 'MEDIUM';
+      case ForecastConfidence.low:
+        return 'LOW';
+      case ForecastConfidence.unknown:
+        return '—';
+    }
+  }
+
+  Color get color {
+    switch (this) {
+      case ForecastConfidence.high:
+        return const Color(0xFF4CAF50);
+      case ForecastConfidence.medium:
+        return const Color(0xFFFFC107);
+      case ForecastConfidence.low:
+        return const Color(0xFFFF5252);
+      case ForecastConfidence.unknown:
+        return const Color(0xFF9E9E9E);
+    }
+  }
+}
+
+class ForecastConfidenceData {
+  final ForecastConfidence level;
+  final int agreementPercent;
+  final String detail;
+
+  ForecastConfidenceData({
+    required this.level,
+    required this.agreementPercent,
+    required this.detail,
+  });
+
+  static ForecastConfidenceData unknown() => ForecastConfidenceData(
+        level: ForecastConfidence.unknown,
+        agreementPercent: 0,
+        detail: 'Confidence data unavailable',
+      );
+}
+
+// ================= OFFLINE CACHE SERVICE =================
+class WeatherCache {
+  static const String _keyWeather = 'cache_weather';
+  static const String _keyForecast = 'cache_forecast';
+  static const String _keyTimestamp = 'cache_timestamp';
+  static const String _keyConfidence = 'cache_confidence';
+
+  static Future<void> saveWeather(dynamic weatherData) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyWeather, json.encode(weatherData));
+  }
+
+  static Future<void> saveForecast({
+    required List<ForecastDay> daily,
+    required List<HourlyForecast> hourly,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _keyForecast,
+      json.encode({
+        'daily': daily.map((d) => d.toJson()).toList(),
+        'hourly': hourly.map((h) => h.toJson()).toList(),
+      }),
+    );
+    await prefs.setInt(_keyTimestamp, DateTime.now().millisecondsSinceEpoch);
+  }
+
+  static Future<void> saveConfidence(ForecastConfidenceData c) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _keyConfidence,
+      '${c.agreementPercent}|${c.level.name}|${c.detail}',
+    );
+  }
+
+  static Future<Map<String, dynamic>?> loadWeather() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_keyWeather);
+    if (raw == null) return null;
+    try {
+      return json.decode(raw) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<Map<String, dynamic>?> loadForecast() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_keyForecast);
+    if (raw == null) return null;
+    try {
+      return json.decode(raw) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<ForecastConfidenceData?> loadConfidence() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_keyConfidence);
+    if (raw == null) return null;
+    final parts = raw.split('|');
+    if (parts.length < 3) return null;
+    final pct = int.tryParse(parts[0]) ?? 0;
+    ForecastConfidence level;
+    switch (parts[1]) {
+      case 'high':
+        level = ForecastConfidence.high;
+        break;
+      case 'medium':
+        level = ForecastConfidence.medium;
+        break;
+      case 'low':
+        level = ForecastConfidence.low;
+        break;
+      default:
+        level = ForecastConfidence.unknown;
+    }
+    return ForecastConfidenceData(
+      level: level,
+      agreementPercent: pct,
+      detail: parts.sublist(2).join('|'),
+    );
+  }
+
+  static Future<DateTime?> lastUpdated() async {
+    final prefs = await SharedPreferences.getInstance();
+    final ts = prefs.getInt(_keyTimestamp);
+    if (ts == null) return null;
+    return DateTime.fromMillisecondsSinceEpoch(ts);
+  }
+
+  static String relativeTime(DateTime? t) {
+    if (t == null) return 'just now';
+    final diff = DateTime.now().difference(t);
+    if (diff.inMinutes < 1) return 'just now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes} min ago';
+    if (diff.inHours < 24) return '${diff.inHours}h ago';
+    return '${diff.inDays}d ago';
+  }
 }
 
 // ================= MAIN SCREEN =================
@@ -141,12 +390,14 @@ class _WeatherScreenState extends State<WeatherScreen> {
   bool _isLoading = true;
   bool _isCelsius = true;
   String? _errorMessage;
+  DateTime? _cacheTimestamp;
 
   DateTime? _sunrise;
   DateTime? _sunset;
 
   List<ForecastDay> _forecast = [];
   List<HourlyForecast> _hourly = [];
+  ForecastConfidenceData _confidence = ForecastConfidenceData.unknown();
 
   double _lastLat = 0.0;
   double _lastLon = 0.0;
@@ -154,11 +405,11 @@ class _WeatherScreenState extends State<WeatherScreen> {
 
   Map<String, String>? _delights;
 
-  // Update service
   final _updater = GithubReleaseApkUpdater();
   final _apiService = GithubApiService();
   final _downloaderService = ApkDownloaderService();
   final _versionComparator = VersionComparator();
+  final _metrics = DebugMetrics();
 
   @override
   void initState() {
@@ -169,7 +420,11 @@ class _WeatherScreenState extends State<WeatherScreen> {
   }
 
   // ================= IN-APP UPDATE =================
-  Future<void> _checkForUpdates() async {
+  Future<void> _checkForUpdates({
+    bool showNoUpdateMessage = false,
+    BuildContext? context,
+  }) async {
+    final sw = Stopwatch()..start();
     try {
       final supportedAbis = await _updater.getSupportedAbis();
       final release = await _apiService.getLatestGithubAPKRelease(
@@ -178,7 +433,24 @@ class _WeatherScreenState extends State<WeatherScreen> {
         apkKeyName: kApkAssetName,
         supportedAbis: supportedAbis,
       );
-      if (release == null) return;
+      sw.stop();
+
+      _metrics.lastUpdateCheck = DateTime.now();
+      _metrics.lastUpdateCheckMs = sw.elapsedMilliseconds;
+
+      if (release == null) {
+        if (showNoUpdateMessage && context != null && context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Could not reach GitHub. Check your connection.'),
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
+        return;
+      }
+
+      _metrics.latestAvailableVersion = release.version;
 
       final currentVersion = await _updater.getCurrentAppVersion();
       final isNewer = _versionComparator.isNewerVersion(
@@ -188,9 +460,29 @@ class _WeatherScreenState extends State<WeatherScreen> {
 
       if (isNewer && mounted) {
         _showUpdateDialog(release);
+      } else if (showNoUpdateMessage && context != null && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('You are on the latest version (v$currentVersion) ✨'),
+            duration: const Duration(seconds: 3),
+            backgroundColor: Colors.green.shade700,
+          ),
+        );
       }
     } catch (e) {
+      sw.stop();
+      _metrics.lastUpdateCheck = DateTime.now();
+      _metrics.lastUpdateCheckMs = sw.elapsedMilliseconds;
       debugPrint('Update check failed: $e');
+      if (showNoUpdateMessage && context != null && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Update check failed. Please try again later.'),
+            duration: Duration(seconds: 3),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
     }
   }
 
@@ -264,12 +556,42 @@ class _WeatherScreenState extends State<WeatherScreen> {
     return base;
   }
 
-  // ================= LOAD WEATHER =================
+  // ================= LOAD WEATHER (CACHE-FIRST) =================
   Future<void> _loadWeather({String? cityQuery}) async {
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-    });
+    bool hadCache = false;
+
+    // ⚡ OFFLINE-FIRST: Load cache instantly (only if no specific city requested)
+    if (cityQuery == null || cityQuery.trim().isEmpty) {
+      final cachedWeather = await WeatherCache.loadWeather();
+      final cachedForecast = await WeatherCache.loadForecast();
+      final cachedConfidence = await WeatherCache.loadConfidence();
+      final ts = await WeatherCache.lastUpdated();
+
+      if (cachedWeather != null) {
+        _applyCurrentWeather(cachedWeather, saveToCache: false);
+        if (cachedForecast != null) {
+          _restoreForecastFromCache(cachedForecast);
+        }
+        if (cachedConfidence != null) {
+          _confidence = cachedConfidence;
+        }
+        if (mounted) {
+          setState(() {
+            _isLoading = false;
+            _cacheTimestamp = ts;
+          });
+          hadCache = true;
+          _metrics.cacheRestores++;
+        }
+      }
+    }
+
+    if (!hadCache) {
+      setState(() {
+        _isLoading = true;
+        _errorMessage = null;
+      });
+    }
 
     try {
       if (cityQuery != null && cityQuery.trim().isNotEmpty) {
@@ -316,7 +638,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
           return;
         }
       } catch (_) {}
-      if (mounted) {
+      if (mounted && !hadCache) {
         setState(() => _errorMessage = 'Using Accra, Ghana (GPS unavailable)');
       }
       _lastLat = 5.6037;
@@ -346,12 +668,18 @@ class _WeatherScreenState extends State<WeatherScreen> {
   }
 
   Future<void> _fetchCurrent(double lat, double lon) async {
+    final sw = Stopwatch()..start();
     final unit = _isCelsius ? 'metric' : 'imperial';
     final url = Uri.parse(
       'https://api.openweathermap.org/data/2.5/weather?lat=$lat&lon=$lon&appid=$apiKey&units=$unit',
     );
     try {
       final res = await http.get(url).timeout(const Duration(seconds: 10));
+      sw.stop();
+      _metrics.lastWeatherFetch = DateTime.now();
+      _metrics.lastWeatherFetchMs = sw.elapsedMilliseconds;
+      _metrics.lastWeatherStatus = 'HTTP ${res.statusCode}';
+
       if (res.statusCode == 200) {
         _applyCurrentWeather(json.decode(res.body));
       } else {
@@ -363,6 +691,10 @@ class _WeatherScreenState extends State<WeatherScreen> {
         }
       }
     } catch (e) {
+      sw.stop();
+      _metrics.lastWeatherFetch = DateTime.now();
+      _metrics.lastWeatherFetchMs = sw.elapsedMilliseconds;
+      _metrics.lastWeatherStatus = 'ERROR';
       if (mounted) {
         setState(() {
           _errorMessage = 'Network error.';
@@ -372,7 +704,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
     }
   }
 
-  void _applyCurrentWeather(dynamic data) {
+  void _applyCurrentWeather(dynamic data, {bool saveToCache = true}) {
     final condition = data['weather'][0]['main'] ?? 'Clear';
     if (mounted) {
       setState(() {
@@ -391,10 +723,33 @@ class _WeatherScreenState extends State<WeatherScreen> {
         } catch (_) {}
       });
     }
+    if (saveToCache) {
+      WeatherCache.saveWeather(data);
+    }
+  }
+
+  void _restoreForecastFromCache(Map<String, dynamic> cached) {
+    try {
+      final daily = (cached['daily'] as List)
+          .map((e) => ForecastDay.fromJson(e as Map<String, dynamic>))
+          .toList();
+      final hourly = (cached['hourly'] as List)
+          .map((e) => HourlyForecast.fromJson(e as Map<String, dynamic>))
+          .toList();
+      if (mounted) {
+        setState(() {
+          _forecast = daily;
+          _hourly = hourly;
+        });
+      }
+    } catch (e) {
+      debugPrint('Forecast cache restore failed: $e');
+    }
   }
 
   // ================= ENHANCED FORECAST FETCH =================
   Future<void> _fetchForecast(double lat, double lon) async {
+    final sw = Stopwatch()..start();
     final tempUnit = _isCelsius ? 'celsius' : 'fahrenheit';
     final url = Uri.parse(
       'https://api.open-meteo.com/v1/forecast'
@@ -412,6 +767,11 @@ class _WeatherScreenState extends State<WeatherScreen> {
 
     try {
       final res = await http.get(url).timeout(const Duration(seconds: 15));
+      sw.stop();
+      _metrics.lastForecastFetch = DateTime.now();
+      _metrics.lastForecastFetchMs = sw.elapsedMilliseconds;
+      _metrics.lastForecastStatus = 'HTTP ${res.statusCode}';
+
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
         final daily = data['daily'];
@@ -494,18 +854,224 @@ class _WeatherScreenState extends State<WeatherScreen> {
             _hourly = hourlyList;
             _forecast = forecastList;
             _isLoading = false;
+            _cacheTimestamp = DateTime.now();
           });
         }
 
+        // 💾 Save to cache
+        await WeatherCache.saveForecast(
+          daily: forecastList,
+          hourly: hourlyList,
+        );
+
         await _checkForecastChanges(forecastList);
         _scheduleNotifications();
+
+        // 🎯 Fetch confidence in background (non-blocking)
+        _fetchConfidenceInBackground(lat, lon);
       } else {
         if (mounted) setState(() => _isLoading = false);
       }
     } catch (e) {
+      sw.stop();
+      _metrics.lastForecastFetch = DateTime.now();
+      _metrics.lastForecastFetchMs = sw.elapsedMilliseconds;
+      _metrics.lastForecastStatus = 'ERROR';
       debugPrint('Forecast fetch failed: $e');
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  // ================= CONFIDENCE METER =================
+  Future<void> _fetchConfidenceInBackground(double lat, double lon) async {
+    final sw = Stopwatch()..start();
+    final result = await ForecastConfidenceService().fetchConfidence(
+      lat: lat,
+      lon: lon,
+      isCelsius: _isCelsius,
+    );
+    sw.stop();
+    _metrics.lastConfidenceFetch = DateTime.now();
+    _metrics.lastConfidenceFetchMs = sw.elapsedMilliseconds;
+
+    if (mounted) {
+      setState(() => _confidence = result);
+    }
+    await WeatherCache.saveConfidence(result);
+  }
+
+  void _showConfidenceDetail() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (context) {
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        final colorScheme = Theme.of(context).colorScheme;
+
+        return Container(
+          padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+          decoration: BoxDecoration(
+            color: isDark ? const Color(0xFF1A1A1A) : Colors.white,
+            borderRadius: const BorderRadius.vertical(
+              top: Radius.circular(28),
+            ),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: colorScheme.onSurfaceVariant.withOpacity(0.3),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  Icon(
+                    Icons.analytics_outlined,
+                    color: _confidence.level.color,
+                    size: 26,
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    'Forecast Confidence',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: colorScheme.onSurface,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              Center(
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    SizedBox(
+                      width: 120,
+                      height: 120,
+                      child: CircularProgressIndicator(
+                        value: _confidence.agreementPercent / 100,
+                        strokeWidth: 8,
+                        backgroundColor:
+                            colorScheme.onSurfaceVariant.withOpacity(0.1),
+                        valueColor:
+                            AlwaysStoppedAnimation(_confidence.level.color),
+                      ),
+                    ),
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          '${_confidence.agreementPercent}%',
+                          style: TextStyle(
+                            fontSize: 32,
+                            fontWeight: FontWeight.bold,
+                            color: _confidence.level.color,
+                          ),
+                        ),
+                        Text(
+                          _confidence.level.label,
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 2,
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 24),
+              Text(
+                _confidence.detail,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 14,
+                  height: 1.5,
+                  color: colorScheme.onSurface,
+                ),
+              ),
+              const SizedBox(height: 24),
+              Divider(color: colorScheme.onSurfaceVariant.withOpacity(0.2)),
+              const SizedBox(height: 16),
+              Text(
+                'HOW THIS WORKS',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1.5,
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'This score compares forecasts from 3 leading weather models. '
+                'When they agree, the forecast is highly reliable. When they '
+                'disagree, expect changes.',
+                style: TextStyle(
+                  fontSize: 13,
+                  height: 1.5,
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  _legendItem('ECMWF', 'European', colorScheme),
+                  const SizedBox(width: 8),
+                  _legendItem('GFS', 'American', colorScheme),
+                  const SizedBox(width: 8),
+                  _legendItem('ICON', 'German', colorScheme),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _legendItem(String name, String origin, ColorScheme colorScheme) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+        decoration: BoxDecoration(
+          color: colorScheme.onSurfaceVariant.withOpacity(0.06),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Column(
+          children: [
+            Text(
+              name,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: colorScheme.onSurface,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              origin,
+              style: TextStyle(
+                fontSize: 10,
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   // ================= FORECAST CHANGE DETECTION =================
@@ -545,7 +1111,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
             '🌧️ Forecast Update for ${_dayName(day.date)}',
             'Rain is now expected. Precipitation probability: ${day.precipitationProbability.toStringAsFixed(0)}%',
             id: 20 + i,
-            isPersistent: true, // Persistent alert
+            isPersistent: true,
           );
         } else if (newCond.toLowerCase().contains('clear') &&
             !oldCond.toLowerCase().contains('clear')) {
@@ -617,6 +1183,8 @@ class _WeatherScreenState extends State<WeatherScreen> {
 
   // ================= NOTIFICATIONS =================
   void _scheduleNotifications() {
+    int count = 0;
+
     final rainSoon = _hourly.take(3).where((h) {
       final c = h.condition.toLowerCase();
       return c.contains('rain') ||
@@ -629,8 +1197,9 @@ class _WeatherScreenState extends State<WeatherScreen> {
         '🌧️ Rain incoming in $_cityName',
         "Rain expected around ${_formatTime(rainSoon.first.time)}. Carry an umbrella!",
         id: 10,
-        isPersistent: true, // Persistent alert
+        isPersistent: true,
       );
+      count++;
     }
 
     NotificationService().scheduleMorningBriefing(
@@ -639,12 +1208,14 @@ class _WeatherScreenState extends State<WeatherScreen> {
       condition: _condition,
       tip: _getHealthTip(_condition, _temperature),
     );
+    count++;
 
     NotificationService().scheduleAfternoonCheck(
       city: _cityName,
       temp: _temperature,
       condition: _condition,
     );
+    count++;
 
     if (_forecast.isNotEmpty) {
       final tomorrow = _forecast.first;
@@ -653,6 +1224,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
         condition: tomorrow.condition,
         temp: tomorrow.temp,
       );
+      count++;
     }
 
     if (_sunrise != null && _sunset != null) {
@@ -664,6 +1236,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
         city: _cityName,
         sunsetTime: _sunset!,
       );
+      count += 2;
     }
 
     NotificationService().scheduleHealthTip(
@@ -672,6 +1245,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
       temp: _temperature,
       tip: _getHealthTip(_condition, _temperature),
     );
+    count++;
 
     if (_delights != null &&
         _delights!['quote'] != null &&
@@ -680,7 +1254,10 @@ class _WeatherScreenState extends State<WeatherScreen> {
         quote: _delights!['quote']!,
         fact: _delights!['fact']!,
       );
+      count++;
     }
+
+    _metrics.notificationCount = count;
   }
 
   String _formatTime(DateTime t) {
@@ -766,11 +1343,8 @@ class _WeatherScreenState extends State<WeatherScreen> {
     return const Color(0xFF90A4AE);
   }
 
-  // ================= FORECAST CARD GRADIENT (NEW) =================
   LinearGradient _getForecastCardGradient(String condition, bool isDark) {
-    final c = condition.toLowerCase();
     final baseColor = _forecastColor(condition);
-    
     if (isDark) {
       return LinearGradient(
         begin: Alignment.topLeft,
@@ -951,7 +1525,11 @@ class _WeatherScreenState extends State<WeatherScreen> {
                 context,
                 MaterialPageRoute(
                   builder: (context) => InfoPage(
-                    onCheckForUpdates: _checkForUpdates,
+                    onCheckForUpdates: (ctx) => _checkForUpdates(
+                      showNoUpdateMessage: true,
+                      context: ctx,
+                    ),
+                    currentVersionGetter: () => _updater.getCurrentAppVersion(),
                   ),
                 ),
               );
@@ -1026,6 +1604,30 @@ class _WeatherScreenState extends State<WeatherScreen> {
                                 ),
                               ],
                             ),
+
+                            // Last Updated Badge
+                            if (_cacheTimestamp != null)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Builder(builder: (context) {
+                                  final age = DateTime.now()
+                                      .difference(_cacheTimestamp!);
+                                  final isStale = age.inMinutes > 30;
+                                  return Text(
+                                    'Updated ${WeatherCache.relativeTime(_cacheTimestamp)}',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      letterSpacing: 0.5,
+                                      color: isStale
+                                          ? Colors.orangeAccent
+                                          : colorScheme.onSurfaceVariant
+                                              .withOpacity(0.6),
+                                    ),
+                                  );
+                                }),
+                              ),
+
                             const SizedBox(height: 10),
 
                             LayoutBuilder(
@@ -1083,7 +1685,66 @@ class _WeatherScreenState extends State<WeatherScreen> {
                                 ),
                               ),
                             ),
-                            const SizedBox(height: 8),
+
+                            // 🎯 Forecast Confidence Pill
+                            if (_confidence.level != ForecastConfidence.unknown)
+                              Center(
+                                child: Padding(
+                                  padding: const EdgeInsets.only(top: 10),
+                                  child: GestureDetector(
+                                    onTap: () {
+                                      HapticFeedback.lightImpact();
+                                      _showConfidenceDetail();
+                                    },
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 12, vertical: 5),
+                                      decoration: BoxDecoration(
+                                        color: _confidence.level.color
+                                            .withOpacity(0.12),
+                                        borderRadius: BorderRadius.circular(20),
+                                        border: Border.all(
+                                          color: _confidence.level.color
+                                              .withOpacity(0.35),
+                                          width: 1,
+                                        ),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Container(
+                                            width: 6,
+                                            height: 6,
+                                            decoration: BoxDecoration(
+                                              shape: BoxShape.circle,
+                                              color: _confidence.level.color,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 6),
+                                          Text(
+                                            '${_confidence.agreementPercent}% CONFIDENCE',
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.w700,
+                                              letterSpacing: 1.2,
+                                              color: _confidence.level.color,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Icon(
+                                            Icons.chevron_right,
+                                            size: 14,
+                                            color: _confidence.level.color
+                                                .withOpacity(0.7),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+
+                            const SizedBox(height: 12),
 
                             Container(
                               margin: const EdgeInsets.symmetric(vertical: 8),
@@ -1217,7 +1878,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
                               ),
                               const SizedBox(height: 12),
                               SizedBox(
-                                height: 140, // Slightly taller for new design
+                                height: 140,
                                 child: ListView.builder(
                                   scrollDirection: Axis.horizontal,
                                   itemCount: _forecast.length,
@@ -1530,9 +2191,9 @@ class _WeatherScreenState extends State<WeatherScreen> {
           ),
           Text(
             '${h.precipitationProbability.toStringAsFixed(0)}%',
-            style: TextStyle(
+            style: const TextStyle(
               fontSize: 10,
-              color: const Color(0xFF4FC3F7),
+              color: Color(0xFF4FC3F7),
             ),
           ),
         ],
@@ -1540,7 +2201,6 @@ class _WeatherScreenState extends State<WeatherScreen> {
     );
   }
 
-  // ================= REDESIGNED FORECAST CARD =================
   Widget _buildForecastCard(
       ForecastDay day, ColorScheme colorScheme, bool isDark) {
     final gradient = _getForecastCardGradient(day.condition, isDark);
@@ -1563,7 +2223,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
         );
       },
       child: Container(
-        width: 104, // Wider
+        width: 104,
         margin: const EdgeInsets.only(right: 14),
         padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 10),
         decoration: BoxDecoration(
@@ -1596,7 +2256,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
             Icon(
               _forecastIcon(day.condition),
               color: accentColor,
-              size: 32, // Bigger icon
+              size: 32,
             ),
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -1622,7 +2282,8 @@ class _WeatherScreenState extends State<WeatherScreen> {
             ),
             if (day.precipitationProbability > 20)
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                 decoration: BoxDecoration(
                   color: const Color(0xFF4FC3F7).withOpacity(0.15),
                   borderRadius: BorderRadius.circular(8),
@@ -1637,7 +2298,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
                 ),
               )
             else
-              const SizedBox(height: 18), // Placeholder to maintain height
+              const SizedBox(height: 18),
           ],
         ),
       ),
@@ -1645,7 +2306,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
   }
 }
 
-// ================= IN-APP UPDATE DIALOG =================
+// ================= UPDATE DIALOG =================
 class _UpdateDialog extends StatefulWidget {
   final GithubAPKRelease release;
   final ApkDownloaderService downloaderService;
@@ -1790,7 +2451,7 @@ class ForecastDetailPage extends StatelessWidget {
     }
   }
 
-  String _getDayTip(String condition, double temp, double uv, double precip) {
+  String _getDayTip(String condition, double temp, double uv) {
     final c = condition.toLowerCase();
     if (c.contains('thunder')) {
       return 'Thunderstorms expected. Avoid outdoor activities and keep electronics unplugged.';
@@ -2060,7 +2721,6 @@ class ForecastDetailPage extends StatelessWidget {
                           day.condition,
                           day.temp,
                           day.uvIndex,
-                          day.precipitationProbability,
                         ),
                         style: TextStyle(
                           fontSize: 13,
@@ -2191,10 +2851,13 @@ class SmallDelightsService {
       if (cached != null) {
         final parts = cached.split('|||');
         if (parts.length == 2) {
+          DebugMetrics().delightCacheHits++;
           return {'quote': parts[0], 'fact': parts[1]};
         }
       }
     }
+
+    DebugMetrics().delightCacheMisses++;
 
     final quote = await _fetchQuote() ??
         _fallbackQuotes[DateTime.now().millisecond % _fallbackQuotes.length];
@@ -2265,11 +2928,195 @@ class SmallDelightsService {
   ];
 }
 
-// ================= INFO PAGE =================
-class InfoPage extends StatelessWidget {
-  final VoidCallback? onCheckForUpdates;
+// ================= 🎯 FORECAST CONFIDENCE SERVICE =================
+class ForecastConfidenceService {
+  static final ForecastConfidenceService _i =
+      ForecastConfidenceService._internal();
+  factory ForecastConfidenceService() => _i;
+  ForecastConfidenceService._internal();
 
-  const InfoPage({super.key, this.onCheckForUpdates});
+  static const List<String> _models = [
+    'ecmwf_ifs04',
+    'gfs_seamless',
+    'icon_seamless',
+  ];
+
+  Future<ForecastConfidenceData> fetchConfidence({
+    required double lat,
+    required double lon,
+    required bool isCelsius,
+  }) async {
+    try {
+      final tempUnit = isCelsius ? 'celsius' : 'fahrenheit';
+      final modelsParam = _models.join(',');
+
+      final url = Uri.parse(
+        'https://api.open-meteo.com/v1/forecast'
+        '?latitude=$lat'
+        '&longitude=$lon'
+        '&daily=temperature_2m_max'
+        '&models=$modelsParam'
+        '&forecast_days=3'
+        '&temperature_unit=$tempUnit'
+        '&timezone=auto',
+      );
+
+      final res = await http.get(url).timeout(const Duration(seconds: 12));
+      if (res.statusCode != 200) return ForecastConfidenceData.unknown();
+
+      final data = json.decode(res.body);
+      final daily = data['daily'];
+      if (daily == null) return ForecastConfidenceData.unknown();
+
+      final Map<String, List<double>> modelTemps = {};
+      for (final model in _models) {
+        final key = 'temperature_2m_max_$model';
+        if (daily[key] != null) {
+          final list = (daily[key] as List)
+              .where((v) => v != null)
+              .map((v) => (v as num).toDouble())
+              .toList();
+          if (list.isNotEmpty) modelTemps[model] = list;
+        }
+      }
+
+      if (modelTemps.length < 2) return ForecastConfidenceData.unknown();
+
+      int highDays = 0;
+      int mediumDays = 0;
+      int lowDays = 0;
+      int totalDays = 0;
+
+      for (int dayIdx = 0; dayIdx < 3; dayIdx++) {
+        final values = <double>[];
+        for (final entry in modelTemps.entries) {
+          if (dayIdx < entry.value.length) {
+            values.add(entry.value[dayIdx]);
+          }
+        }
+        if (values.length < 2) continue;
+
+        final maxV = values.reduce((a, b) => a > b ? a : b);
+        final minV = values.reduce((a, b) => a < b ? a : b);
+        final spread = maxV - minV;
+
+        final thresholdHigh = isCelsius ? 2.0 : 3.6;
+        final thresholdMedium = isCelsius ? 5.0 : 9.0;
+
+        if (spread <= thresholdHigh) {
+          highDays++;
+        } else if (spread <= thresholdMedium) {
+          mediumDays++;
+        } else {
+          lowDays++;
+        }
+        totalDays++;
+      }
+
+      if (totalDays == 0) return ForecastConfidenceData.unknown();
+
+      final int agreementPercent =
+          ((highDays * 100 + mediumDays * 60 + lowDays * 25) / totalDays)
+              .round();
+
+      ForecastConfidence level;
+      if (highDays >= totalDays) {
+        level = ForecastConfidence.high;
+      } else if (lowDays == 0) {
+        level = ForecastConfidence.medium;
+      } else {
+        level = ForecastConfidence.low;
+      }
+
+      final modelsUsed = modelTemps.length;
+      final String detail;
+      if (level == ForecastConfidence.high) {
+        detail = '$modelsUsed/$modelsUsed models agree within '
+            '${isCelsius ? "2°C" : "3.6°F"}';
+      } else if (level == ForecastConfidence.medium) {
+        detail = '$highDays of $totalDays days agree — minor disagreement '
+            'on the rest';
+      } else {
+        detail =
+            '$lowDays of $totalDays days disagree — forecast is uncertain';
+      }
+
+      return ForecastConfidenceData(
+        level: level,
+        agreementPercent: agreementPercent,
+        detail: detail,
+      );
+    } catch (e) {
+      debugPrint('Confidence fetch failed: $e');
+      return ForecastConfidenceData.unknown();
+    }
+  }
+}
+
+// ================= INFO PAGE (WITH HIDDEN DEBUG GESTURE) =================
+class InfoPage extends StatefulWidget {
+  final void Function(BuildContext)? onCheckForUpdates;
+  final Future<String> Function()? currentVersionGetter;
+
+  const InfoPage({
+    super.key,
+    this.onCheckForUpdates,
+    this.currentVersionGetter,
+  });
+
+  @override
+  State<InfoPage> createState() => _InfoPageState();
+}
+
+class _InfoPageState extends State<InfoPage> {
+  int _titleTapCount = 0;
+  DateTime? _lastTapTime;
+  String _currentVersion = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadVersion();
+  }
+
+  Future<void> _loadVersion() async {
+    if (widget.currentVersionGetter != null) {
+      try {
+        final v = await widget.currentVersionGetter!();
+        if (mounted) setState(() => _currentVersion = v);
+      } catch (_) {}
+    }
+  }
+
+  void _handleTitleTap() {
+    final now = DateTime.now();
+    if (_lastTapTime == null ||
+        now.difference(_lastTapTime!) > const Duration(seconds: 2)) {
+      _titleTapCount = 0;
+    }
+    _lastTapTime = now;
+    _titleTapCount++;
+
+    HapticFeedback.selectionClick();
+
+    if (_titleTapCount == 5) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Keep tapping... 👀'),
+          duration: Duration(seconds: 1),
+        ),
+      );
+    }
+
+    if (_titleTapCount >= 7) {
+      _titleTapCount = 0;
+      HapticFeedback.heavyImpact();
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const DebugPanelPage()),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2289,18 +3136,24 @@ class InfoPage extends StatelessWidget {
             children: [
               Icon(Icons.cloud, size: 90, color: colorScheme.onSurfaceVariant),
               const SizedBox(height: 24),
-              Text(
-                'Weather Hub',
-                style: TextStyle(
-                  fontSize: 26,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 1.0,
-                  color: colorScheme.onSurface,
+              GestureDetector(
+                onTap: _handleTitleTap,
+                behavior: HitTestBehavior.opaque,
+                child: Text(
+                  'Weather Hub',
+                  style: TextStyle(
+                    fontSize: 26,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.0,
+                    color: colorScheme.onSurface,
+                  ),
                 ),
               ),
               const SizedBox(height: 8),
               Text(
-                'Version 1.1.0',
+                _currentVersion.isEmpty
+                    ? 'Version ...'
+                    : 'Version $_currentVersion',
                 style: TextStyle(
                   fontSize: 14,
                   color: colorScheme.onSurfaceVariant,
@@ -2335,12 +3188,9 @@ class InfoPage extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 30),
-              if (onCheckForUpdates != null)
+              if (widget.onCheckForUpdates != null)
                 OutlinedButton.icon(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    onCheckForUpdates!();
-                  },
+                  onPressed: () => widget.onCheckForUpdates!(context),
                   icon: const Icon(Icons.system_update, size: 18),
                   label: const Text('Check for Updates'),
                 ),
@@ -2360,7 +3210,260 @@ class InfoPage extends StatelessWidget {
   }
 }
 
-// ================= NOTIFICATION SERVICE (UPDATED FOR PERSISTENCE) =================
+// ================= DEBUG PANEL =================
+class DebugPanelPage extends StatefulWidget {
+  const DebugPanelPage({super.key});
+
+  @override
+  State<DebugPanelPage> createState() => _DebugPanelPageState();
+}
+
+class _DebugPanelPageState extends State<DebugPanelPage> {
+  final _api = GithubApiService();
+  final _updater = GithubReleaseApkUpdater();
+  String _currentVersion = '...';
+  List<String> _abis = [];
+  String? _latestRemoteVersion;
+  String? _latestAssetName;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadInfo();
+  }
+
+  Future<void> _loadInfo() async {
+    try {
+      final v = await _updater.getCurrentAppVersion();
+      final abis = await _updater.getSupportedAbis();
+      String? latest;
+      String? asset;
+      try {
+        final release = await _api.getLatestGithubAPKRelease(
+          ownerGithub: kGithubOwner,
+          repositoryGithub: kGithubRepo,
+          apkKeyName: kApkAssetName,
+          supportedAbis: abis,
+        );
+        latest = release?.version;
+        asset = release?.apkUrl.split('/').last;
+      } catch (_) {}
+      if (mounted) {
+        setState(() {
+          _currentVersion = v;
+          _abis = abis;
+          _latestRemoteVersion = latest;
+          _latestAssetName = asset;
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() => _currentVersion = 'Unknown');
+    }
+  }
+
+  String _fmtTime(DateTime? t) {
+    if (t == null) return '—';
+    return '${t.hour.toString().padLeft(2, '0')}:'
+        '${t.minute.toString().padLeft(2, '0')}:'
+        '${t.second.toString().padLeft(2, '0')}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final m = DebugMetrics();
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Row(
+          children: [
+            Icon(Icons.bug_report, size: 20),
+            SizedBox(width: 8),
+            Text('Developer Console'),
+          ],
+        ),
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          _buildBadge('PRIVATE DIAGNOSTICS · NOT FOR PRODUCTION USE'),
+          const SizedBox(height: 20),
+          _sectionHeader('BUILD INFO'),
+          _row('App Version', _currentVersion),
+          _row('Package', '$kGithubOwner/$kGithubRepo'),
+          _row('Asset Name', kApkAssetName),
+          _row('Supported ABIs', _abis.isEmpty ? '—' : _abis.join(', ')),
+          const SizedBox(height: 20),
+          _sectionHeader('RUNTIME METRICS'),
+          _row(
+            'Last Update Check',
+            '${_fmtTime(m.lastUpdateCheck)}'
+                '${m.lastUpdateCheckMs != null ? '  (${m.lastUpdateCheckMs}ms)' : ''}',
+          ),
+          _row(
+            'Last Weather Fetch',
+            '${_fmtTime(m.lastWeatherFetch)}'
+                '${m.lastWeatherFetchMs != null ? '  (${m.lastWeatherFetchMs}ms)' : ''}',
+          ),
+          _row('Weather Status', m.lastWeatherStatus ?? '—'),
+          _row(
+            'Last Forecast Fetch',
+            '${_fmtTime(m.lastForecastFetch)}'
+                '${m.lastForecastFetchMs != null ? '  (${m.lastForecastFetchMs}ms)' : ''}',
+          ),
+          _row('Forecast Status', m.lastForecastStatus ?? '—'),
+          _row(
+            'Last Confidence Fetch',
+            '${_fmtTime(m.lastConfidenceFetch)}'
+                '${m.lastConfidenceFetchMs != null ? '  (${m.lastConfidenceFetchMs}ms)' : ''}',
+          ),
+          _row('Scheduled Notifications', '${m.notificationCount}'),
+          _row('Cache Restores', '${m.cacheRestores}'),
+          const SizedBox(height: 20),
+          _sectionHeader('REMOTE STATE'),
+          _row('Latest Remote Version', _latestRemoteVersion ?? 'Fetching...'),
+          _row('Latest Asset', _latestAssetName ?? '—'),
+          _row('Auto Update Enabled', 'Yes'),
+          const SizedBox(height: 20),
+          _sectionHeader('CACHE'),
+          _row('Daily Delight Hits', '${m.delightCacheHits}'),
+          _row('Daily Delight Misses', '${m.delightCacheMisses}'),
+          const SizedBox(height: 20),
+          _sectionHeader('DATA SOURCES'),
+          _row('Current Weather', 'OpenWeatherMap API v2.5'),
+          _row('Forecast', 'Open-Meteo API v1 (multi-model)'),
+          _row('Confidence', 'ECMWF + GFS + ICON ensemble'),
+          _row('Quotes', 'ZenQuotes + Quotable'),
+          _row('Facts', 'UselessFacts + CatFact'),
+          const SizedBox(height: 20),
+          _sectionHeader('ACTIONS'),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () async {
+                    final prefs = await SharedPreferences.getInstance();
+                    await prefs.clear();
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                            content: Text('All cached data cleared.')),
+                      );
+                    }
+                  },
+                  icon: const Icon(Icons.delete_outline, size: 18),
+                  label: const Text('Clear Cache'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () {
+                    setState(() => m.reset());
+                    _loadInfo();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Metrics reset.')),
+                    );
+                  },
+                  icon: const Icon(Icons.refresh, size: 18),
+                  label: const Text('Reset'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 30),
+          Center(
+            child: Text(
+              'Sonnami Internal Build · v${_currentVersion.isEmpty ? "..." : _currentVersion}',
+              style: TextStyle(
+                fontSize: 11,
+                color: colorScheme.onSurfaceVariant.withOpacity(0.5),
+                letterSpacing: 1.2,
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBadge(String text) {
+    return Center(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: const Color(0xFFFF6B6B).withOpacity(0.15),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: const Color(0xFFFF6B6B).withOpacity(0.4)),
+        ),
+        child: Text(
+          text,
+          style: const TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.bold,
+            letterSpacing: 1.5,
+            color: Color(0xFFFF6B6B),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _sectionHeader(String title) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text(
+        title,
+        style: const TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.bold,
+          letterSpacing: 1.5,
+          color: Color(0xFF4FC3F7),
+        ),
+      ),
+    );
+  }
+
+  Widget _row(String label, String value) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            flex: 3,
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 4,
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                fontFamily: 'monospace',
+                color: colorScheme.onSurface,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ================= NOTIFICATION SERVICE =================
 class NotificationService {
   static final NotificationService _instance = NotificationService._internal();
   factory NotificationService() => _instance;
@@ -2405,8 +3508,8 @@ class NotificationService {
         channelDescription: 'Notifications for weather updates',
         importance: Importance.max,
         priority: Priority.max,
-        ongoing: isPersistent, // Makes it non-dismissible
-        autoCancel: !isPersistent, // Keeps it until tapped if persistent
+        ongoing: isPersistent,
+        autoCancel: !isPersistent,
       );
       const DarwinNotificationDetails iosDetails = DarwinNotificationDetails();
       final NotificationDetails details = NotificationDetails(
@@ -2455,8 +3558,7 @@ class NotificationService {
         body: body,
         scheduledDate: scheduled,
         notificationDetails: details,
-        androidScheduleMode: AndroidScheduleMode
-            .exactAllowWhileIdle, // Ensures it fires exactly on time
+        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
       );
     } catch (e) {
       debugPrint('Scheduled notification failed: $e');
