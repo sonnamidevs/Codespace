@@ -545,6 +545,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
             '🌧️ Forecast Update for ${_dayName(day.date)}',
             'Rain is now expected. Precipitation probability: ${day.precipitationProbability.toStringAsFixed(0)}%',
             id: 20 + i,
+            isPersistent: true, // Persistent alert
           );
         } else if (newCond.toLowerCase().contains('clear') &&
             !oldCond.toLowerCase().contains('clear')) {
@@ -628,6 +629,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
         '🌧️ Rain incoming in $_cityName',
         "Rain expected around ${_formatTime(rainSoon.first.time)}. Carry an umbrella!",
         id: 10,
+        isPersistent: true, // Persistent alert
       );
     }
 
@@ -762,6 +764,32 @@ class _WeatherScreenState extends State<WeatherScreen> {
     if (c.contains('thunder')) return const Color(0xFF9575CD);
     if (c.contains('snow')) return const Color(0xFF81D4FA);
     return const Color(0xFF90A4AE);
+  }
+
+  // ================= FORECAST CARD GRADIENT (NEW) =================
+  LinearGradient _getForecastCardGradient(String condition, bool isDark) {
+    final c = condition.toLowerCase();
+    final baseColor = _forecastColor(condition);
+    
+    if (isDark) {
+      return LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [
+          baseColor.withOpacity(0.25),
+          const Color(0xFF1E1E1E).withOpacity(0.9),
+        ],
+      );
+    } else {
+      return LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [
+          baseColor.withOpacity(0.15),
+          Colors.white.withOpacity(0.95),
+        ],
+      );
+    }
   }
 
   String _dayName(DateTime d) {
@@ -1189,7 +1217,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
                               ),
                               const SizedBox(height: 12),
                               SizedBox(
-                                height: 130,
+                                height: 140, // Slightly taller for new design
                                 child: ListView.builder(
                                   scrollDirection: Axis.horizontal,
                                   itemCount: _forecast.length,
@@ -1512,8 +1540,12 @@ class _WeatherScreenState extends State<WeatherScreen> {
     );
   }
 
+  // ================= REDESIGNED FORECAST CARD =================
   Widget _buildForecastCard(
       ForecastDay day, ColorScheme colorScheme, bool isDark) {
+    final gradient = _getForecastCardGradient(day.condition, isDark);
+    final accentColor = _forecastColor(day.condition);
+
     return GestureDetector(
       onTap: () {
         HapticFeedback.mediumImpact();
@@ -1525,23 +1557,27 @@ class _WeatherScreenState extends State<WeatherScreen> {
               colorScheme: colorScheme,
               isDark: isDark,
               isCelsius: _isCelsius,
-              accentColor: _forecastColor(day.condition),
+              accentColor: accentColor,
             ),
           ),
         );
       },
       child: Container(
-        width: 88,
-        margin: const EdgeInsets.only(right: 12),
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
+        width: 104, // Wider
+        margin: const EdgeInsets.only(right: 14),
+        padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 10),
         decoration: BoxDecoration(
-          color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
-          borderRadius: BorderRadius.circular(18),
+          gradient: gradient,
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(
+            color: accentColor.withOpacity(0.3),
+            width: 1.5,
+          ),
           boxShadow: [
             BoxShadow(
-              color: isDark ? Colors.black26 : Colors.black.withOpacity(0.05),
-              blurRadius: 10,
-              offset: const Offset(0, 3),
+              color: accentColor.withOpacity(0.15),
+              blurRadius: 15,
+              offset: const Offset(0, 6),
             ),
           ],
         ),
@@ -1551,22 +1587,25 @@ class _WeatherScreenState extends State<WeatherScreen> {
             Text(
               _dayName(day.date).toUpperCase(),
               style: TextStyle(
-                fontSize: 11,
-                letterSpacing: 1.0,
-                fontWeight: FontWeight.w600,
-                color: colorScheme.onSurfaceVariant,
+                fontSize: 12,
+                letterSpacing: 1.2,
+                fontWeight: FontWeight.w700,
+                color: isDark ? Colors.white70 : Colors.black54,
               ),
             ),
-            Icon(_forecastIcon(day.condition),
-                color: _forecastColor(day.condition), size: 26),
+            Icon(
+              _forecastIcon(day.condition),
+              color: accentColor,
+              size: 32, // Bigger icon
+            ),
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Text(
                   '${day.maxTemp.toStringAsFixed(0)}°',
                   style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
                     color: colorScheme.onSurface,
                   ),
                 ),
@@ -1574,7 +1613,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
                 Text(
                   '${day.minTemp.toStringAsFixed(0)}°',
                   style: TextStyle(
-                    fontSize: 12,
+                    fontSize: 13,
                     fontWeight: FontWeight.w500,
                     color: colorScheme.onSurfaceVariant.withOpacity(0.6),
                   ),
@@ -1582,14 +1621,23 @@ class _WeatherScreenState extends State<WeatherScreen> {
               ],
             ),
             if (day.precipitationProbability > 20)
-              Text(
-                '${day.precipitationProbability.toStringAsFixed(0)}%',
-                style: const TextStyle(
-                  fontSize: 10,
-                  color: Color(0xFF4FC3F7),
-                  fontWeight: FontWeight.w600,
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF4FC3F7).withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(8),
                 ),
-              ),
+                child: Text(
+                  '${day.precipitationProbability.toStringAsFixed(0)}%',
+                  style: const TextStyle(
+                    fontSize: 10,
+                    color: Color(0xFF4FC3F7),
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              )
+            else
+              const SizedBox(height: 18), // Placeholder to maintain height
           ],
         ),
       ),
@@ -1597,7 +1645,7 @@ class _WeatherScreenState extends State<WeatherScreen> {
   }
 }
 
-// ================= IN-APP UPDATE DIALOG (SAFE VERSION) =================
+// ================= IN-APP UPDATE DIALOG =================
 class _UpdateDialog extends StatefulWidget {
   final GithubAPKRelease release;
   final ApkDownloaderService downloaderService;
@@ -2115,7 +2163,7 @@ class ForecastDetailPage extends StatelessWidget {
   }
 }
 
-// ================= SMALL DELIGHTS SERVICE (FIXED) =================
+// ================= SMALL DELIGHTS SERVICE =================
 class SmallDelightsService {
   static final SmallDelightsService _instance =
       SmallDelightsService._internal();
@@ -2312,7 +2360,7 @@ class InfoPage extends StatelessWidget {
   }
 }
 
-// ================= NOTIFICATION SERVICE =================
+// ================= NOTIFICATION SERVICE (UPDATED FOR PERSISTENCE) =================
 class NotificationService {
   static final NotificationService _instance = NotificationService._internal();
   factory NotificationService() => _instance;
@@ -2348,18 +2396,20 @@ class NotificationService {
   }
 
   Future<void> showNotification(String title, String body,
-      {int id = 0}) async {
+      {int id = 0, bool isPersistent = false}) async {
     try {
-      const AndroidNotificationDetails androidDetails =
+      final AndroidNotificationDetails androidDetails =
           AndroidNotificationDetails(
         'weather_channel',
         'Weather Alerts',
         channelDescription: 'Notifications for weather updates',
         importance: Importance.max,
-        priority: Priority.high,
+        priority: Priority.max,
+        ongoing: isPersistent, // Makes it non-dismissible
+        autoCancel: !isPersistent, // Keeps it until tapped if persistent
       );
       const DarwinNotificationDetails iosDetails = DarwinNotificationDetails();
-      const NotificationDetails details = NotificationDetails(
+      final NotificationDetails details = NotificationDetails(
         android: androidDetails,
         iOS: iosDetails,
       );
@@ -2405,7 +2455,8 @@ class NotificationService {
         body: body,
         scheduledDate: scheduled,
         notificationDetails: details,
-        androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+        androidScheduleMode: AndroidScheduleMode
+            .exactAllowWhileIdle, // Ensures it fires exactly on time
       );
     } catch (e) {
       debugPrint('Scheduled notification failed: $e');
