@@ -36,7 +36,7 @@ class BackgroundUpdateService {
     const android = AndroidInitializationSettings('@mipmap/ic_launcher');
     const ios = DarwinInitializationSettings();
     const settings = InitializationSettings(android: android, iOS: ios);
-    await _notifications.initialize(settings);
+    await _notifications.initialize(settings: settings);
   }
 
   // ================= CHECK + AUTO DOWNLOAD =================
@@ -177,20 +177,17 @@ class BackgroundUpdateService {
     );
   }
 
-  /// Call when user taps "Later" — increments the skip count.
   static Future<void> registerSkip() async {
     final prefs = await SharedPreferences.getInstance();
     final count = (prefs.getInt(_prefsSkipCount) ?? 0) + 1;
     await prefs.setInt(_prefsSkipCount, count);
   }
 
-  /// Reset skip count (call after successful update).
   static Future<void> resetSkip() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_prefsSkipCount);
   }
 
-  /// Returns true if the user has skipped too many times.
   static Future<bool> shouldForceUpdate() async {
     final prefs = await SharedPreferences.getInstance();
     final count = prefs.getInt(_prefsSkipCount) ?? 0;
@@ -222,10 +219,15 @@ class BackgroundUpdateService {
     );
     final details = NotificationDetails(android: android, iOS: null);
 
-    await _notifications.show(_notificationId, title, body, details);
+    await _notifications.show(
+      id: _notificationId,
+      title: title,
+      body: body,
+      notificationDetails: details,
+    );
   }
 
   Future<void> _cancelNotification() async {
-    await _notifications.cancel(_notificationId);
+    await _notifications.cancel(id: _notificationId);
   }
 }
