@@ -10,6 +10,7 @@ import 'package:timezone/data/latest.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
 import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:github_release_apk_updater/github_release_apk_updater.dart';
+import 'background_update_service.dart';
 
 // ================= THEME NOTIFIER =================
 final ValueNotifier<ThemeMode> themeNotifier = ValueNotifier(ThemeMode.dark);
@@ -69,6 +70,7 @@ void main() async {
   } catch (e) {
     debugPrint('Timezone setup failed: $e');
   }
+  await BackgroundUpdateService().init();
   runApp(const WeatherHubApp());
   NotificationService().init();
 }
@@ -378,7 +380,8 @@ class WeatherScreen extends StatefulWidget {
   State<WeatherScreen> createState() => _WeatherScreenState();
 }
 
-class _WeatherScreenState extends State<WeatherScreen> {
+class _WeatherScreenState extends State<WeatherScreen>
+    with WidgetsBindingObserver {
   static const String apiKey = 'dc09ecccd1c2202e86924f13c2458d90';
 
   String _cityName = 'Loading...';
@@ -406,66 +409,53 @@ class _WeatherScreenState extends State<WeatherScreen> {
   Map<String, String>? _delights;
 
   final _updater = GithubReleaseApkUpdater();
-  final _apiService = GithubApiService();
-  final _downloaderService = ApkDownloaderService();
-  final _versionComparator = VersionComparator();
   final _metrics = DebugMetrics();
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadWeather();
     _loadDelights();
     WidgetsBinding.instance.addPostFrameCallback((_) => _checkForUpdates());
   }
 
-  // ================= IN-APP UPDATE =================
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      _checkForUpdates();
+    }
+  }
+
+  // ================= IN-APP UPDATE (SILENT BACKGROUND) =================
   Future<void> _checkForUpdates({
     bool showNoUpdateMessage = false,
     BuildContext? context,
   }) async {
     final sw = Stopwatch()..start();
+
     try {
-      final supportedAbis = await _updater.getSupportedAbis() ?? <String>[];
-      final release = await _apiService.getLatestGithubAPKRelease(
+      await BackgroundUpdateService().checkAndUpdateSilently(
         ownerGithub: kGithubOwner,
         repositoryGithub: kGithubRepo,
         apkKeyName: kApkAssetName,
-        supportedAbis: supportedAbis,
       );
       sw.stop();
-
       _metrics.lastUpdateCheck = DateTime.now();
       _metrics.lastUpdateCheckMs = sw.elapsedMilliseconds;
 
-      if (release == null) {
-        if (showNoUpdateMessage && context != null && context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Could not reach GitHub. Check your connection.'),
-              duration: Duration(seconds: 3),
-            ),
-          );
-        }
-        return;
-      }
-
-      _metrics.latestAvailableVersion = release.version;
-
-      final currentVersion = await _updater.getCurrentAppVersion();
-      final isNewer = _versionComparator.isNewerVersion(
-        release.version,
-        currentVersion,
-      );
-
-      if (isNewer && mounted) {
-        _showUpdateDialog(release);
-      } else if (showNoUpdateMessage && context != null && context.mounted) {
+      if (showNoUpdateMessage && context != null && context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('You are on the latest version (v$currentVersion) ✨'),
-            duration: const Duration(seconds: 3),
-            backgroundColor: Colors.green.shade700,
+          const SnackBar(
+            content: Text('Checking for updates in the background...'),
+            duration: Duration(seconds: 2),
           ),
         );
       }
@@ -484,18 +474,6 @@ class _WeatherScreenState extends State<WeatherScreen> {
         );
       }
     }
-  }
-
-  void _showUpdateDialog(GithubAPKRelease release) {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => _UpdateDialog(
-        release: release,
-        downloaderService: _downloaderService,
-        updaterPlugin: _updater,
-      ),
-    );
   }
 
   // ================= LOAD DELIGHTS =================
@@ -560,7 +538,6 @@ class _WeatherScreenState extends State<WeatherScreen> {
   Future<void> _loadWeather({String? cityQuery}) async {
     bool hadCache = false;
 
-    // ⚡ OFFLINE-FIRST: Load cache instantly (only if no specific city requested)
     if (cityQuery == null || cityQuery.trim().isEmpty) {
       final cachedWeather = await WeatherCache.loadWeather();
       final cachedForecast = await WeatherCache.loadForecast();
@@ -858,7 +835,6 @@ class _WeatherScreenState extends State<WeatherScreen> {
           });
         }
 
-        // 💾 Save to cache
         await WeatherCache.saveForecast(
           daily: forecastList,
           hourly: hourlyList,
@@ -867,7 +843,6 @@ class _WeatherScreenState extends State<WeatherScreen> {
         await _checkForecastChanges(forecastList);
         _scheduleNotifications();
 
-        // 🎯 Fetch confidence in background (non-blocking)
         _fetchConfidenceInBackground(lat, lon);
       } else {
         if (mounted) setState(() => _isLoading = false);
@@ -1605,7 +1580,6 @@ class _WeatherScreenState extends State<WeatherScreen> {
                               ],
                             ),
 
-                            // Last Updated Badge
                             if (_cacheTimestamp != null)
                               Padding(
                                 padding: const EdgeInsets.only(top: 4),
@@ -1686,7 +1660,6 @@ class _WeatherScreenState extends State<WeatherScreen> {
                               ),
                             ),
 
-                            // 🎯 Forecast Confidence Pill
                             if (_confidence.level != ForecastConfidence.unknown)
                               Center(
                                 child: Padding(
@@ -2306,98 +2279,6 @@ class _WeatherScreenState extends State<WeatherScreen> {
   }
 }
 
-// ================= UPDATE DIALOG =================
-class _UpdateDialog extends StatefulWidget {
-  final GithubAPKRelease release;
-  final ApkDownloaderService downloaderService;
-  final GithubReleaseApkUpdater updaterPlugin;
-
-  const _UpdateDialog({
-    required this.release,
-    required this.downloaderService,
-    required this.updaterPlugin,
-  });
-
-  @override
-  State<_UpdateDialog> createState() => _UpdateDialogState();
-}
-
-class _UpdateDialogState extends State<_UpdateDialog> {
-  bool _isDownloading = false;
-  double _progress = 0.0;
-
-  Future<void> _startDownloadAndInstall() async {
-    setState(() => _isDownloading = true);
-    final filePath = await widget.downloaderService.downloadAPK(
-      widget.release.apkUrl,
-      null,
-      (received, total) {
-        if (total != -1) {
-          setState(() => _progress = received / total);
-        }
-      },
-    );
-    setState(() => _isDownloading = false);
-    if (filePath != null) {
-      await widget.updaterPlugin.installApk(filePath);
-      if (mounted) Navigator.of(context).pop();
-    } else {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Failed to download update.')),
-        );
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      title: Row(
-        children: const [
-          Icon(Icons.system_update, color: Color(0xFF4FC3F7)),
-          SizedBox(width: 10),
-          Text('Update Available'),
-        ],
-      ),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Version ${widget.release.version}',
-            style: const TextStyle(fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'A new version of Weather Hub is available with improvements and bug fixes. Tap "Update Now" to install it.',
-            style: TextStyle(fontSize: 13),
-          ),
-          if (_isDownloading) ...[
-            const SizedBox(height: 20),
-            const Text('Downloading...'),
-            const SizedBox(height: 8),
-            LinearProgressIndicator(value: _progress),
-          ],
-        ],
-      ),
-      actions: [
-        if (!_isDownloading)
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Later'),
-          ),
-        if (!_isDownloading)
-          FilledButton(
-            onPressed: _startDownloadAndInstall,
-            child: const Text('Update Now'),
-          ),
-      ],
-    );
-  }
-}
-
 // ================= FORECAST DETAIL PAGE =================
 class ForecastDetailPage extends StatelessWidget {
   final ForecastDay day;
@@ -2928,7 +2809,7 @@ class SmallDelightsService {
   ];
 }
 
-// ================= 🎯 FORECAST CONFIDENCE SERVICE =================
+// ================= FORECAST CONFIDENCE SERVICE =================
 class ForecastConfidenceService {
   static final ForecastConfidenceService _i =
       ForecastConfidenceService._internal();
@@ -3053,7 +2934,7 @@ class ForecastConfidenceService {
   }
 }
 
-// ================= INFO PAGE (WITH HIDDEN DEBUG GESTURE) =================
+// ================= INFO PAGE =================
 class InfoPage extends StatefulWidget {
   final void Function(BuildContext)? onCheckForUpdates;
   final Future<String> Function()? currentVersionGetter;
@@ -3372,6 +3253,28 @@ class _DebugPanelPageState extends State<DebugPanelPage> {
                 ),
               ),
             ],
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () async {
+                await BackgroundUpdateService().checkAndUpdateSilently(
+                  ownerGithub: kGithubOwner,
+                  repositoryGithub: kGithubRepo,
+                  apkKeyName: kApkAssetName,
+                );
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                        content:
+                            Text('Silent update check triggered.')),
+                  );
+                }
+              },
+              icon: const Icon(Icons.system_update_alt, size: 18),
+              label: const Text('Force Silent Update Check'),
+            ),
           ),
           const SizedBox(height: 30),
           Center(
